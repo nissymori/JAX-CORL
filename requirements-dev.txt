@@ -1,0 +1,5 @@
+black
+blackdoc
+flake8
+isort
+mypy
