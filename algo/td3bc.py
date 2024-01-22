@@ -51,62 +51,6 @@ class TD3BCConfig:
 config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
 
 
-class SegmentTimer(object):
-    def __init__(self, first_segment_name: str = "InitialSegment") -> None:
-        self.start_time = time.time()
-        self.last_summary_time = self.start_time
-        self.last_segment_start = self.start_time
-        self.segment_name = first_segment_name
-
-        self.segment_averages = {}
-        self.segment_counts = {}
-
-    def new_segment(self, new_segment_name: str, quiet=True) -> None:
-        segment_duration = time.time() - self.last_segment_start
-
-        if self.segment_name in self.segment_averages:
-            prev_avg = self.segment_averages[self.segment_name]
-            prev_count = self.segment_counts[self.segment_name]
-            new_avg = (prev_avg * prev_count + segment_duration) / (prev_count + 1)
-            self.segment_averages[self.segment_name] = new_avg
-            self.segment_counts[self.segment_name] = prev_count + 1
-        else:
-            new_avg = segment_duration
-            prev_count = 0
-            self.segment_averages[self.segment_name] = new_avg
-            self.segment_counts[self.segment_name] = 1
-
-        if not quiet:
-            print(
-                f"{self.segment_name} took {segment_duration:.3f}s; avg {new_avg:.3f}s after {prev_count + 1} runs"
-            )
-
-        self.segment_name = new_segment_name
-        self.last_segment_start = time.time()
-
-    def summary(self) -> str:
-        self.last_summary_time = time.time()
-        return_str = ""
-        for segment_name in self.segment_averages.keys():
-            segment_duration = self.segment_averages[segment_name]
-            segment_count = self.segment_counts[segment_name]
-            if segment_name == self.segment_name:
-                segment_duration = (
-                    segment_duration * segment_count
-                    + time.time()
-                    - self.last_segment_start
-                ) / (segment_count + 1)
-                segment_count += 1
-            return_str += f"{segment_name}: avg {segment_duration:.3f}s; tot {segment_count * segment_duration:.3f}s \t"
-
-        self.segment_averages = {}
-        self.segment_counts = {}
-        return return_str[:-1]
-
-
-segment_timer = SegmentTimer("ImportsEtc.")
-
-
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
 
@@ -593,12 +537,6 @@ def train_offline_d4rl():
     total_steps = 0
     log_steps, log_return = [], []
     num_total_its = int(config.train_steps) // config.evaluate_every_epochs
-    t = tqdm.trange(
-        1,
-        config.train_steps,
-        desc=f"TD3-BC",
-        leave=True,
-    )
 
     update_steps_fn = offline_trainer.make_update_steps_fn(
         buffer,
@@ -610,8 +548,7 @@ def train_offline_d4rl():
     )
     jit_update_steps_fn = jax.jit(update_steps_fn)
 
-    for it in range(num_total_its):
-        segment_timer.new_segment("updating")
+    for it in tqdm(range(num_total_its)):
         total_steps += 1
         t.update(config.evaluate_every_epochs)
         rng, rng_eval, rng_update = jax.random.split(rng, 3)
