@@ -29,7 +29,7 @@ class TD3BCConfig:
     env_name: str = "Hopper"
     data_quality: str = "medium-expert"
     train_steps: int = 1000000
-    evaluate_every_epochs: int = 40000
+    evaluate_every_epochs: int = 10000
     num_test_rollouts: int = 5
     batch_size: int = 256
     buffer_size: int = 1000000
@@ -592,11 +592,7 @@ def normalize_dataset(
     obs_std = np.std(buffer["states"], axis=0)
     buffer["states"] = (buffer["states"] - obs_mean) / obs_std
     buffer["next_states"] = (buffer["next_states"] - obs_mean) / obs_std
-    positive_mean = obs_mean
-    positive_std = obs_std
-    negative_mean = obs_mean
-    negative_std = obs_std
-    return buffer, positive_mean, positive_std, negative_mean, negative_std
+    return buffer, obs_mean, obs_std
 
 
 def train_offline_d4rl():
@@ -628,10 +624,8 @@ def train_offline_d4rl():
     # normalize dataset
     (
         buffer,
-        positive_mean,
-        positive_std,
-        negative_mean,
-        negative_std,
+        obs_mean,
+        obs_std,
     ) = normalize_dataset(buffer, config)
 
     buffer = jax.tree_map(jnp.array, buffer)
@@ -684,9 +678,7 @@ def train_offline_d4rl():
                 config,
             )
             eval_rew_normed = env.get_normalized_score(eval_reward) * 100
-
             info = {}
-            print(time.time() - eval_start, "seconds for eval")
             eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
             eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
             eval_dict[f"offline/step"] = total_steps
