@@ -195,6 +195,84 @@ def get_models(
         update_idx=0,
     )
 
+def get_actor_loss(
+    actor_params: flax.core.frozen_dict.FrozenDict,
+    critic_params: flax.core.frozen_dict.FrozenDict,
+    actor_apply_fn: Callable[..., Any],
+    critic_apply_fn: Callable[..., Any],
+    obs: jnp.ndarray,
+    action: jnp.ndarray,
+    td3_alpha: Optional[float] = None,
+) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
+    predicted_action = actor_apply_fn(actor_params, obs, rng=None)
+    critic_params = jax.lax.stop_gradient(critic_params)
+    q_value, _ = critic_apply_fn(
+        critic_params, obs, predicted_action, rng=None
+    )  # todo this will also affect the critic update :/
+
+    if td3_alpha is None:
+        loss_actor = -1.0 * q_value.mean()
+        bc_loss = 0.0
+        loss_lambda = 1.0
+    else:
+        mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
+        loss_lambda = td3_alpha / mean_abs_q
+
+        bc_loss = jnp.square(predicted_action - action).mean()
+        loss_actor = -1.0 * q_value.mean() * loss_lambda + bc_loss
+    return loss_actor, (
+        bc_loss,
+        -1.0 * q_value.mean() * loss_lambda,
+    )
+
+
+def get_critic_loss(
+    critic_params: flax.core.frozen_dict.FrozenDict,
+    critic_target_params: flax.core.frozen_dict.FrozenDict,
+    actor_target_params: flax.core.frozen_dict.FrozenDict,
+    critic_apply_fn: Callable[..., Any],
+    actor_apply_fn: Callable[..., Any],
+    obs: jnp.ndarray,
+    action: jnp.ndarray,
+    reward: jnp.ndarray,
+    done: jnp.ndarray,
+    next_obs: jnp.ndarray,
+    decay: float,
+    policy_noise_std: float,
+    policy_noise_clip: float,
+    max_action: float,
+    rng_key: jax.random.PRNGKey,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    q_pred_1, q_pred_2 = critic_apply_fn(critic_params, obs, action, rng=None)
+
+    target_next_action = actor_apply_fn(actor_target_params, next_obs, rng=None)
+    policy_noise = (
+        policy_noise_std * max_action * jax.random.normal(rng_key, action.shape)
+    )
+    target_next_action = target_next_action + policy_noise.clip(
+        -policy_noise_clip, policy_noise_clip
+    )
+    target_next_action = target_next_action.clip(-max_action, max_action)
+
+    q_next_1, q_next_2 = critic_apply_fn(
+        critic_target_params, next_obs, target_next_action, rng=None
+    )
+
+    target = reward[..., None] + decay * jnp.minimum(q_next_1, q_next_2) * (
+        1 - done[..., None]
+    )
+    target = jax.lax.stop_gradient(target)
+
+    value_loss_1 = jnp.square(q_pred_1 - target)
+    value_loss_2 = jnp.square(q_pred_2 - target)
+    value_loss = (value_loss_1 + value_loss_2).mean()
+
+    return value_loss, (
+        value_loss_1.mean(),
+        value_loss_2.mean(),
+        target.mean(),
+    )
+
 
 def make_update_steps_fn(
     buffer: ReplayBuffer,
@@ -293,7 +371,7 @@ def get_action(
     actor_train_state: TrainState,
     obs: jnp.ndarray,
 ) -> jnp.ndarray:
-    action = actor_train_state.apply_fn(actor_train_state.params, obs)
+    action = actor_train_state.apply_fn(actor_train_state.params, obs, rng=None)
     action = action.clip(action_space.low, action_space.high)
     return action
 
@@ -307,85 +385,6 @@ def sample_batch(buffer, num_existing_samples, config, rng):
     next_obs = buffer.next_states[idxes]
     done = buffer.dones[idxes]
     return obs, action, reward, next_obs, done
-
-
-def get_actor_loss(
-    actor_params: flax.core.frozen_dict.FrozenDict,
-    critic_params: flax.core.frozen_dict.FrozenDict,
-    actor_apply_fn: Callable[..., Any],
-    critic_apply_fn: Callable[..., Any],
-    obs: jnp.ndarray,
-    action: jnp.ndarray,
-    td3_alpha: Optional[float] = None,
-) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
-    predicted_action = actor_apply_fn(actor_params, obs, rng=None)
-    critic_params = jax.lax.stop_gradient(critic_params)
-    q_value, _ = critic_apply_fn(
-        critic_params, obs, predicted_action, rng=None
-    )  # todo this will also affect the critic update :/
-
-    if td3_alpha is None:
-        loss_actor = -1.0 * q_value.mean()
-        bc_loss = 0.0
-        loss_lambda = 1.0
-    else:
-        mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
-        loss_lambda = td3_alpha / mean_abs_q
-
-        bc_loss = jnp.square(predicted_action - action).mean()
-        loss_actor = -1.0 * q_value.mean() * loss_lambda + bc_loss
-    return loss_actor, (
-        bc_loss,
-        -1.0 * q_value.mean() * loss_lambda,
-    )
-
-
-def get_critic_loss(
-    critic_params: flax.core.frozen_dict.FrozenDict,
-    critic_target_params: flax.core.frozen_dict.FrozenDict,
-    actor_target_params: flax.core.frozen_dict.FrozenDict,
-    critic_apply_fn: Callable[..., Any],
-    actor_apply_fn: Callable[..., Any],
-    obs: jnp.ndarray,
-    action: jnp.ndarray,
-    reward: jnp.ndarray,
-    done: jnp.ndarray,
-    next_obs: jnp.ndarray,
-    decay: float,
-    policy_noise_std: float,
-    policy_noise_clip: float,
-    max_action: float,
-    rng_key: jax.random.PRNGKey,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    q_pred_1, q_pred_2 = critic_apply_fn(critic_params, obs, action, rng=None)
-
-    target_next_action = actor_apply_fn(actor_target_params, next_obs, rng=None)
-    policy_noise = (
-        policy_noise_std * max_action * jax.random.normal(rng_key, action.shape)
-    )
-    target_next_action = target_next_action + policy_noise.clip(
-        -policy_noise_clip, policy_noise_clip
-    )
-    target_next_action = target_next_action.clip(-max_action, max_action)
-
-    q_next_1, q_next_2 = critic_apply_fn(
-        critic_target_params, next_obs, target_next_action, rng=None
-    )
-
-    target = reward[..., None] + decay * jnp.minimum(q_next_1, q_next_2) * (
-        1 - done[..., None]
-    )
-    target = jax.lax.stop_gradient(target)
-
-    value_loss_1 = jnp.square(q_pred_1 - target)
-    value_loss_2 = jnp.square(q_pred_2 - target)
-    value_loss = (value_loss_1 + value_loss_2).mean()
-
-    return value_loss, (
-        value_loss_1.mean(),
-        value_loss_2.mean(),
-        target.mean(),
-    )
 
 
 def eval_d4rl(
@@ -415,10 +414,7 @@ def eval_d4rl(
 
 if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
-    wandb.init(
-        project="train-" + "TD3-BC",
-        config=config,
-    )
+    wandb.init(project="train-TD3-BC", config=config)
     buffer = ReplayBuffer(
         states=jnp.asarray(dataset["observations"]),
         actions=jnp.asarray(dataset["actions"]),
@@ -435,7 +431,6 @@ if __name__ == "__main__":
         rng_buffer, (config.buffer_size,), 0, len(buffer.states)
     )
     buffer = jax.tree_map(lambda x: x[buffer_idx], buffer)
-
     obs_mean = np.mean(buffer.states, axis=0)
     obs_std = np.std(buffer.states, axis=0)
     buffer = buffer._replace(
@@ -445,7 +440,6 @@ if __name__ == "__main__":
     offline_train_state = get_models(rng)
 
     total_steps = 0
-    log_steps, log_return = [], []
     num_total_its = int(config.train_steps) // config.evaluate_every_epochs
 
     update_steps_fn = make_update_steps_fn(
@@ -479,6 +473,4 @@ if __name__ == "__main__":
         eval_dict[f"offline/step"] = total_steps
         print(eval_dict)
         wandb.log(eval_dict)
-        log_steps.append(total_steps)
-        log_return.append(eval_dict)
     wandb.finish()
