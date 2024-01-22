@@ -295,7 +295,7 @@ class TD3BCTrainer(RLTrainer):
 
 
     @partial(jax.jit, static_argnames=("self", "config", "num_existing_samples"))
-    def sample_buff_and_update_n_times(
+    def sample_buff_and_update(
         self,
         offline_train_state: TD3BCTrainState,
         buffer,
@@ -605,7 +605,7 @@ def train_offline_d4rl():
         (
             metric_dict,
             offline_train_state,
-        ) = offline_trainer.sample_buff_and_update_n_times(
+        ) = offline_trainer.sample_buff_and_update(
             offline_train_state,
             buffer=buffer,
             num_existing_samples=len(buffer.states),
