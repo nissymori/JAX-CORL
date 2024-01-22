@@ -293,93 +293,83 @@ class TD3BCTrainer(RLTrainer):
             update_idx=0,
         )
 
-    def make_update_steps_fn(
+    def make_update_step_fn(
         self,
-        buffer: ReplayBuffer,
         num_existing_samples: int,
-        update_steps: int,
         max_action: float,
         action_dim: int,
         config: TD3BCConfig,
     ) -> Tuple[dict, TD3BCTrainState]:
-        def update_steps_fn(
+        def update_step_fn(
             offline_train_state: TD3BCTrainState,
+            batch: ReplayBuffer,
             rng: jax.random.PRNGKey,
         ):
-            def update_step_fn(
-                offline_train_state: TD3BCTrainState,
-                rng: jax.random.PRNGKey,
-            ):
-                train_state_critic = offline_train_state.critic
-                train_state_actor = offline_train_state.actor
-                critic_params_target = offline_train_state.critic_params_target
-                actor_params_target = offline_train_state.actor_params_target
+            train_state_critic = offline_train_state.critic
+            train_state_actor = offline_train_state.actor
+            critic_params_target = offline_train_state.critic_params_target
+            actor_params_target = offline_train_state.actor_params_target
 
-                rng, subkey = jax.random.split(rng)
-                obs, action, reward, next_obs, done = sample_batch(
-                    buffer, num_existing_samples, config, subkey
-                )
-                rng, subkey = jax.random.split(rng)
-                critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
-                critic_loss, critic_grads = critic_grad_fn(
-                    train_state_critic.params,
-                    critic_params_target,
-                    actor_params_target,
-                    train_state_critic.apply_fn,
-                    train_state_actor.apply_fn,
-                    obs,
-                    action,
-                    reward,
-                    done,
-                    next_obs,
-                    config.gamma,
-                    config.td3_policy_noise_std,
-                    config.td3_policy_noise_std,
-                    max_action,
-                    subkey,
-                )
-                train_state_critic = train_state_critic.apply_gradients(grads=critic_grads)
-                actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
-                actor_loss, actor_grads = actor_grad_fn(
-                    train_state_actor.params,
-                    train_state_critic.params,
-                    train_state_actor.apply_fn,
-                    train_state_critic.apply_fn,
-                    obs,
-                    action,
-                    config.td3_alpha,
-                )
-                new_train_state_actor = train_state_actor.apply_gradients(grads=actor_grads)
-                train_state_actor = jax.lax.cond(
-                    offline_train_state.update_idx % config.policy_freq == 0,
-                    lambda : new_train_state_actor,
-                    lambda : train_state_actor,
-                )
-                # update target network
-                critic_params_target = jax.tree_map(
-                    lambda target, live: config.polyak * target
-                    + (1.0 - config.polyak) * live,
-                    critic_params_target,
-                    train_state_critic.params,
-                )
-                actor_params_target = jax.tree_map(
-                    lambda target, live: config.polyak * target
-                    + (1.0 - config.polyak) * live,
-                    actor_params_target,
-                    train_state_actor.params,
-                )
-                offline_train_state = TD3BCTrainState(
-                    critic=train_state_critic,
-                    actor=train_state_actor,
-                    critic_params_target=critic_params_target,
-                    actor_params_target=actor_params_target,
-                    update_idx=offline_train_state.update_idx + 1,
-                )
-                return offline_train_state, None
-            rng_keys = jax.random.split(rng, update_steps)
-            offline_train_state, _ = jax.lax.scan(update_step_fn, offline_train_state, rng_keys)
+            rng, subkey = jax.random.split(rng)
+            obs, action, reward, next_obs, done = batch
+            rng, subkey = jax.random.split(rng)
+            critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
+            critic_loss, critic_grads = critic_grad_fn(
+                train_state_critic.params,
+                critic_params_target,
+                actor_params_target,
+                train_state_critic.apply_fn,
+                train_state_actor.apply_fn,
+                obs,
+                action,
+                reward,
+                done,
+                next_obs,
+                config.gamma,
+                config.td3_policy_noise_std,
+                config.td3_policy_noise_std,
+                max_action,
+                subkey,
+            )
+            train_state_critic = train_state_critic.apply_gradients(grads=critic_grads)
+            actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
+            actor_loss, actor_grads = actor_grad_fn(
+                train_state_actor.params,
+                train_state_critic.params,
+                train_state_actor.apply_fn,
+                train_state_critic.apply_fn,
+                obs,
+                action,
+                config.td3_alpha,
+            )
+            new_train_state_actor = train_state_actor.apply_gradients(grads=actor_grads)
+            train_state_actor = jax.lax.cond(
+                offline_train_state.update_idx % config.policy_freq == 0,
+                lambda : new_train_state_actor,
+                lambda : train_state_actor,
+            )
+            # update target network
+            critic_params_target = jax.tree_map(
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
+                critic_params_target,
+                train_state_critic.params,
+            )
+            actor_params_target = jax.tree_map(
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
+                actor_params_target,
+                train_state_actor.params,
+            )
+            offline_train_state = TD3BCTrainState(
+                critic=train_state_critic,
+                actor=train_state_actor,
+                critic_params_target=critic_params_target,
+                actor_params_target=actor_params_target,
+                update_idx=offline_train_state.update_idx + 1,
+            )
             return offline_train_state
-        return update_steps_fn
+        return update_step_fn
             
 
     @partial(jax.jit, static_argnames=("self", "config", "exploration_noise"))
@@ -410,14 +400,14 @@ class TD3BCTrainer(RLTrainer):
 
 
 @partial(jax.jit, static_argnames=("config"))
-def sample_batch(buffer, num_existing_samples, config, rng):
+def sample_batch(buffer, num_existing_samples, rng):
     idxes = jax.random.randint(rng, (config.batch_size,), 0, num_existing_samples)
     obs = buffer.states[idxes]
     action = buffer.actions[idxes]
     reward = buffer.rewards[idxes]
     next_obs = buffer.next_states[idxes]
     done = buffer.dones[idxes]
-    return obs, action, reward, next_obs, done
+    return (obs, action, reward, next_obs, done)
 
 
 def get_actor_loss(
@@ -560,12 +550,9 @@ def train_offline_d4rl():
         rewards=jnp.asarray(dataset["rewards"]),
         dones=jnp.asarray(dataset["terminals"]),
     )
-
-    offline_trainer = TD3BCTrainer(config=config, action_space=action_space)
-
-    offline_train_state = offline_trainer.get_models(
-        env_obs_dim, act_dim, max_action, config, rng
-    )
+    rng, buffer_rng = jax.random.split(rng)
+    buffer_idx = jax.random.randint(buffer_rng, (config.batch_size,), 0, len(buffer.states))
+    buffer = jax.tree_map(lambda x: x[buffer_idx], buffer)
 
     print("normalizing")
     obs_mean = np.mean(buffer.states, axis=0)
@@ -575,9 +562,15 @@ def train_offline_d4rl():
         next_states=(buffer.next_states - obs_mean) / obs_std
     )
 
+    offline_trainer = TD3BCTrainer(config=config, action_space=action_space)
+    offline_train_state = offline_trainer.get_models(
+        env_obs_dim, act_dim, max_action, config, rng
+    )
+
+
     total_steps = 0
     log_steps, log_return = [], []
-    num_total_its = int(config.train_steps) // config.evaluate_every_epochs
+    num_total_its = int(config.train_steps)
     t = tqdm.trange(
         1,
         config.train_steps,
@@ -585,49 +578,50 @@ def train_offline_d4rl():
         leave=True,
     )
 
-    update_steps_fn = offline_trainer.make_update_steps_fn(
-        buffer,
+    update_step_fn = offline_trainer.make_update_step_fn(
         len(buffer.states),
-        config.evaluate_every_epochs,
         max_action,
         act_dim,
         config,
     )
-    jit_update_steps_fn = jax.jit(update_steps_fn)
+    jit_update_step_fn = jax.jit(update_step_fn)
 
     for it in range(num_total_its):
         segment_timer.new_segment("updating")
         total_steps += 1
-        t.update(config.evaluate_every_epochs)
-        rng, rng_eval, rng_update = jax.random.split(rng, 3)
-        offline_train_state = jit_update_steps_fn(
+        t.update(1)
+        rng, rng_eval, rng_update, rng_batch = jax.random.split(rng, 4)
+        batch = sample_batch(buffer, len(buffer.states), rng_batch)
+        offline_train_state = jit_update_step_fn(
             offline_train_state,
+            batch,
             rng_update,
         )
-        rng, rng_eval = jax.random.split(rng)
-        eval_dict = {}
-        eval_reward = eval_d4rl(
-            rng_eval,
-            offline_trainer,
-            offline_train_state.actor,
-            env,
-            config.num_test_rollouts,
-            obs_mean,
-            obs_std,
-            config,
-        )
-        eval_rew_normed = env.get_normalized_score(eval_reward) * 100
-        eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
-        eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
-        eval_dict[f"offline/step"] = total_steps
-        t.set_description(
-            f"TD3-BC/{config.env_name} R_te: {eval_reward:.2f}, {eval_rew_normed:.2f}"
-        )
-        t.refresh()
 
-        wandb.log(eval_dict)
-        log_steps.append(total_steps)
-        log_return.append(eval_dict)
+        if it % config.evaluate_every_epochs == 0:
+            eval_dict = {}
+            eval_reward = eval_d4rl(
+                rng_eval,
+                offline_trainer,
+                offline_train_state.actor,
+                env,
+                config.num_test_rollouts,
+                obs_mean,
+                obs_std,
+                config,
+            )
+            eval_rew_normed = env.get_normalized_score(eval_reward) * 100
+            eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
+            eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
+            eval_dict[f"offline/step"] = total_steps
+            t.set_description(
+                f"TD3-BC/{config.env_name} R_te: {eval_reward:.2f}, {eval_rew_normed:.2f}"
+            )
+            t.refresh()
+
+            wandb.log(eval_dict)
+            log_steps.append(total_steps)
+            log_return.append(eval_dict)
     wandb.finish()
     return (
         log_steps,
