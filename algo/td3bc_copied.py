@@ -1,24 +1,24 @@
 import time
+from collections import defaultdict
 from functools import partial
 from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
+import flax
 import flax.linen as nn
 import gym
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
-import flax
-from omegaconf import OmegaConf
-from pydantic import BaseModel
+import tqdm
+import wandb
+from flax import struct
 from flax.training import train_state
 from flax.training.train_state import TrainState
+from omegaconf import OmegaConf
+from pydantic import BaseModel
 from tensorflow_probability.substrates import jax as tfp
-from flax import struct
-import wandb
-import tqdm
-from collections import defaultdict
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -315,7 +315,6 @@ class TD3BCTrainer(RLTrainer):
             critic_params_target=critic_params_target,
             actor_params_target=actor_params_target,
         )
-
 
     @partial(jax.jit, static_argnames=("self", "config", "num_existing_samples"))
     def sample_buff_and_update_n_times(
@@ -696,5 +695,6 @@ def train_offline_d4rl():
         log_return,
         offline_train_state.actor.params,
     )
+
 
 train_offline_d4rl()

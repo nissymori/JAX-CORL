@@ -1,24 +1,24 @@
 import time
+from collections import defaultdict
 from functools import partial
 from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
+import flax
 import flax.linen as nn
 import gym
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
-import flax
-from omegaconf import OmegaConf
-from pydantic import BaseModel
+import tqdm
+import wandb
+from flax import struct
 from flax.training import train_state
 from flax.training.train_state import TrainState
+from omegaconf import OmegaConf
+from pydantic import BaseModel
 from tensorflow_probability.substrates import jax as tfp
-from flax import struct
-import wandb
-import tqdm
-from collections import defaultdict
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -29,7 +29,7 @@ class TD3BCConfig:
     env_name: str = "Hopper"
     data_quality: str = "medium-expert"
     train_steps: int = 1000000
-    evaluate_every_epochs: int = 10000
+    evaluate_every_epochs: int = 100000
     num_test_rollouts: int = 5
     batch_size: int = 256
     buffer_size: int = 1000000
@@ -46,7 +46,6 @@ class TD3BCConfig:
     td3_alpha: float = 2.5
     td3_policy_noise_std: float = 0.2
     td3_policy_noise_clip: float = 0.5
-    n_updates_jit: int = 8
 
 
 config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
@@ -108,40 +107,16 @@ class SegmentTimer(object):
 segment_timer = SegmentTimer("ImportsEtc.")
 
 
-class BufferManager:
-    def __init__(
-        self,
-    ):
-        pass
-
-    @partial(jax.jit, static_argnums=(0, 2))
-    def get(self, buffer, batch_size: int, rng):
-        idxes = jax.random.randint(rng, (batch_size,), 0, buffer["_p"])
-        batch = (
-            buffer["states"][idxes],
-            buffer["actions"][idxes],
-            buffer["rewards"][idxes],
-            buffer["next_states"][idxes],
-            buffer["dones"][idxes],
-        )
-        return batch
-
-    def from_dataset(
-        self, ds: dict[np.ndarray], clip_to_eps: bool = True, eps: float = 1e-3
-    ):
-        buffer = {
-            "states": ds["observations"],
-            "actions": ds["actions"],
-            "rewards": ds["rewards"],
-            "next_states": ds["next_observations"],
-            "dones": ds["terminals"],
-        }
-        buffer["_p"] = buffer["states"].shape[0]
-        return buffer
-
-
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
+
+
+class ReplayBuffer(NamedTuple):
+    states: jnp.ndarray
+    actions: jnp.ndarray
+    next_states: jnp.ndarray
+    rewards: jnp.ndarray
+    dones: jnp.ndarray
 
 
 class DoubleCritic(nn.Module):
@@ -261,6 +236,7 @@ class TD3BCTrainState:
     actor: TrainState
     critic_params_target: flax.core.FrozenDict
     actor_params_target: flax.core.FrozenDict
+    update_idx: jnp.int32
 
 
 class TD3BCTrainer(RLTrainer):
@@ -314,65 +290,57 @@ class TD3BCTrainer(RLTrainer):
             actor=actor_train_state,
             critic_params_target=critic_params_target,
             actor_params_target=actor_params_target,
+            update_idx=0,
         )
 
-
-    @partial(jax.jit, static_argnames=("self", "config", "num_existing_samples"))
-    def sample_buff_and_update_n_times(
+    def make_update_steps_fn(
         self,
-        offline_train_state: TD3BCTrainState,
-        buffer,
+        buffer: ReplayBuffer,
         num_existing_samples: int,
+        update_steps: int,
         max_action: float,
         action_dim: int,
-        rng: jax.random.PRNGKey,
         config: TD3BCConfig,
     ) -> Tuple[dict, TD3BCTrainState]:
-        avg_metrics_dict = defaultdict(int)
-        train_state_critic = offline_train_state.critic
-        train_state_actor = offline_train_state.actor
-        critic_params_target = offline_train_state.critic_params_target
-        actor_params_target = offline_train_state.actor_params_target
+        def update_steps_fn(
+            offline_train_state: TD3BCTrainState,
+            rng: jax.random.PRNGKey,
+        ):
+            def update_step_fn(
+                offline_train_state: TD3BCTrainState,
+                rng: jax.random.PRNGKey,
+            ):
+                train_state_critic = offline_train_state.critic
+                train_state_actor = offline_train_state.actor
+                critic_params_target = offline_train_state.critic_params_target
+                actor_params_target = offline_train_state.actor_params_target
 
-        for update_idx in range(config.n_updates_jit):
-            rng, subkey = jax.random.split(rng)
-            obs, action, reward, next_obs, done = sample_batch(
-                buffer, num_existing_samples, config, subkey
-            )
-
-            rng, subkey = jax.random.split(rng)
-
-            critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
-            critic_loss, critic_grads = critic_grad_fn(
-                train_state_critic.params,
-                critic_params_target,
-                actor_params_target,
-                train_state_critic.apply_fn,
-                train_state_actor.apply_fn,
-                obs,
-                action,
-                reward,
-                done,
-                next_obs,
-                config.gamma,
-                config.td3_policy_noise_std,
-                config.td3_policy_noise_std,
-                max_action,
-                subkey,
-            )
-            train_state_critic = train_state_critic.apply_gradients(grads=critic_grads)
-            avg_metrics_dict["offline/critic_grad_norm"] += jnp.mean(
-                jnp.array(
-                    jax.tree_util.tree_flatten(
-                        jax.tree_map(jnp.linalg.norm, critic_grads)
-                    )[0]
+                rng, subkey = jax.random.split(rng)
+                obs, action, reward, next_obs, done = sample_batch(
+                    buffer, num_existing_samples, config, subkey
                 )
-            )
-            avg_metrics_dict["offline/value_loss_1"] += critic_loss[1][0]
-            avg_metrics_dict["offline/value_loss_2"] += critic_loss[1][1]
-            avg_metrics_dict["offline/target"] += critic_loss[1][2]
-
-            if update_idx % config.policy_freq == 0:
+                rng, subkey = jax.random.split(rng)
+                critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
+                critic_loss, critic_grads = critic_grad_fn(
+                    train_state_critic.params,
+                    critic_params_target,
+                    actor_params_target,
+                    train_state_critic.apply_fn,
+                    train_state_actor.apply_fn,
+                    obs,
+                    action,
+                    reward,
+                    done,
+                    next_obs,
+                    config.gamma,
+                    config.td3_policy_noise_std,
+                    config.td3_policy_noise_std,
+                    max_action,
+                    subkey,
+                )
+                train_state_critic = train_state_critic.apply_gradients(
+                    grads=critic_grads
+                )
                 actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
                 actor_loss, actor_grads = actor_grad_fn(
                     train_state_actor.params,
@@ -383,46 +351,43 @@ class TD3BCTrainer(RLTrainer):
                     action,
                     config.td3_alpha,
                 )
-                train_state_actor = train_state_actor.apply_gradients(grads=actor_grads)
-                avg_metrics_dict["offline/actor_loss"] += actor_loss[0]
-                avg_metrics_dict["offline/actor_loss_bc"] += actor_loss[1][0]
-                avg_metrics_dict["offline/actor_loss_td3_xlambda"] += actor_loss[1][1]
-                avg_metrics_dict["offline/actor_grad_norm"] += jnp.mean(
-                    jnp.array(
-                        jax.tree_util.tree_flatten(
-                            jax.tree_map(jnp.linalg.norm, actor_grads)
-                        )[0]
-                    )
+                new_train_state_actor = train_state_actor.apply_gradients(
+                    grads=actor_grads
                 )
+                train_state_actor = jax.lax.cond(
+                    offline_train_state.update_idx % config.policy_freq == 0,
+                    lambda: new_train_state_actor,
+                    lambda: train_state_actor,
+                )
+                # update target network
+                critic_params_target = jax.tree_map(
+                    lambda target, live: config.polyak * target
+                    + (1.0 - config.polyak) * live,
+                    critic_params_target,
+                    train_state_critic.params,
+                )
+                actor_params_target = jax.tree_map(
+                    lambda target, live: config.polyak * target
+                    + (1.0 - config.polyak) * live,
+                    actor_params_target,
+                    train_state_actor.params,
+                )
+                offline_train_state = TD3BCTrainState(
+                    critic=train_state_critic,
+                    actor=train_state_actor,
+                    critic_params_target=critic_params_target,
+                    actor_params_target=actor_params_target,
+                    update_idx=offline_train_state.update_idx + 1,
+                )
+                return offline_train_state, None
 
-            # update target network
-            critic_params_target = jax.tree_map(
-                lambda target, live: config.polyak * target
-                + (1.0 - config.polyak) * live,
-                critic_params_target,
-                train_state_critic.params,
+            rng_keys = jax.random.split(rng, update_steps)
+            offline_train_state, _ = jax.lax.scan(
+                update_step_fn, offline_train_state, rng_keys
             )
-            actor_params_target = jax.tree_map(
-                lambda target, live: config.polyak * target
-                + (1.0 - config.polyak) * live,
-                actor_params_target,
-                train_state_actor.params,
-            )
+            return offline_train_state
 
-        for k, v in avg_metrics_dict.items():
-            if "offline/actor" in k:
-                avg_metrics_dict[k] = v / (config.n_updates_jit / config.policy_freq)
-            else:
-                avg_metrics_dict[k] = v / config.n_updates_jit
-
-        offline_train_state = TD3BCTrainState(
-            critic=train_state_critic,
-            actor=train_state_actor,
-            critic_params_target=critic_params_target,
-            actor_params_target=actor_params_target,
-        )
-
-        return avg_metrics_dict, offline_train_state
+        return update_steps_fn
 
     @partial(jax.jit, static_argnames=("self", "config", "exploration_noise"))
     def get_action(
@@ -454,11 +419,11 @@ class TD3BCTrainer(RLTrainer):
 @partial(jax.jit, static_argnames=("config"))
 def sample_batch(buffer, num_existing_samples, config, rng):
     idxes = jax.random.randint(rng, (config.batch_size,), 0, num_existing_samples)
-    obs = buffer["states"][idxes]
-    action = buffer["actions"][idxes]
-    reward = buffer["rewards"][idxes]
-    next_obs = buffer["next_states"][idxes]
-    done = buffer["dones"][idxes]
+    obs = buffer.states[idxes]
+    action = buffer.actions[idxes]
+    reward = buffer.rewards[idxes]
+    next_obs = buffer.next_states[idxes]
+    done = buffer.dones[idxes]
     return obs, action, reward, next_obs, done
 
 
@@ -578,23 +543,6 @@ def eval_d4rl(
     return np.mean(episode_rews)
 
 
-def normalize_dataset(
-    buffer: dict,
-    config: TD3BCConfig,
-):
-    """
-    Normalize the dataset.
-    If we have predictor, we normalize based on the labels (pu, pvu, ground_true)
-    If we don't have predictor, we normalize based on the whole dataset (vanilla).
-    """
-    print("normalizing")
-    obs_mean = np.mean(buffer["states"], axis=0)
-    obs_std = np.std(buffer["states"], axis=0)
-    buffer["states"] = (buffer["states"] - obs_mean) / obs_std
-    buffer["next_states"] = (buffer["next_states"] - obs_mean) / obs_std
-    return buffer, obs_mean, obs_std
-
-
 def train_offline_d4rl():
     """
     Offline Training Loop.
@@ -612,8 +560,29 @@ def train_offline_d4rl():
     act_dim = action_space.shape[0]
     max_action = action_space.high
 
-    buffer_manager = BufferManager()
-    buffer = buffer_manager.from_dataset(dataset)
+    buffer = ReplayBuffer(
+        states=jnp.asarray(dataset["observations"]),
+        actions=jnp.asarray(dataset["actions"]),
+        next_states=jnp.asarray(dataset["next_observations"]),
+        rewards=jnp.asarray(dataset["rewards"]),
+        dones=jnp.asarray(dataset["terminals"]),
+    )
+    rng, rng_permute = jax.random.split(rng)
+    perm = jax.random.permutation(rng_permute, len(buffer.states))
+    buffer = jax.tree_map(lambda x: x[perm], buffer)
+
+    rng, rng_buffer = jax.random.split(rng)
+    buffer_idx = jax.random.randint(
+        rng_buffer, (config.buffer_size,), 0, len(buffer.states)
+    )
+    buffer = jax.tree_map(lambda x: x[buffer_idx], buffer)
+
+    obs_mean = np.mean(buffer.states, axis=0)
+    obs_std = np.std(buffer.states, axis=0)
+    buffer = buffer._replace(
+        states=(buffer.states - obs_mean) / obs_std,
+        next_states=(buffer.next_states - obs_mean) / obs_std,
+    )
 
     offline_trainer = TD3BCTrainer(config=config, action_space=action_space)
 
@@ -621,80 +590,65 @@ def train_offline_d4rl():
         env_obs_dim, act_dim, max_action, config, rng
     )
 
-    # normalize dataset
-    (
-        buffer,
-        obs_mean,
-        obs_std,
-    ) = normalize_dataset(buffer, config)
-
-    buffer = jax.tree_map(jnp.array, buffer)
-
     total_steps = 0
     log_steps, log_return = [], []
-    num_total_its = int(config.train_steps // config.n_updates_jit + 1)
+    num_total_its = int(config.train_steps) // config.evaluate_every_epochs
     t = tqdm.trange(
         1,
         config.train_steps,
         desc=f"TD3-BC",
         leave=True,
     )
+
+    update_steps_fn = offline_trainer.make_update_steps_fn(
+        buffer,
+        len(buffer.states),
+        config.evaluate_every_epochs,
+        max_action,
+        act_dim,
+        config,
+    )
+    jit_update_steps_fn = jax.jit(update_steps_fn)
+
     for it in range(num_total_its):
         segment_timer.new_segment("updating")
-        total_steps += config.n_updates_jit
-        t.update(config.n_updates_jit)
+        total_steps += 1
+        t.update(config.evaluate_every_epochs)
         rng, rng_eval, rng_update = jax.random.split(rng, 3)
-        (
-            metric_dict,
+        offline_train_state = jit_update_steps_fn(
             offline_train_state,
-        ) = offline_trainer.sample_buff_and_update_n_times(
-            offline_train_state,
-            buffer=buffer,
-            num_existing_samples=buffer["_p"]
-            if isinstance(buffer["_p"], int)
-            else buffer["_p"].item(),
-            rng=rng_update,
-            action_dim=act_dim,
-            max_action=max_action,
-            config=config,
+            rng_update,
         )
-        if it % 200 == 0:
-            metric_dict["offline/step"] = total_steps
-            wandb.log(metric_dict)
-        if time.time() - segment_timer.last_summary_time > 60:
-            print(segment_timer.summary())
-        if (it + 1) % config.evaluate_every_epochs == 0:
-            segment_timer.new_segment("evaluation")
-            rng, rng_eval = jax.random.split(rng)
-            eval_dict = {}
-            eval_reward = eval_d4rl(
-                rng_eval,
-                offline_trainer,
-                offline_train_state.actor,
-                env,
-                config.num_test_rollouts,
-                obs_mean,
-                obs_std,
-                config,
-            )
-            eval_rew_normed = env.get_normalized_score(eval_reward) * 100
-            info = {}
-            eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
-            eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
-            eval_dict[f"offline/step"] = total_steps
-            t.set_description(
-                f"TD3-BC/{config.env_name} R_te: {eval_reward:.2f}, {eval_rew_normed:.2f}"
-            )
-            t.refresh()
+        rng, rng_eval = jax.random.split(rng)
+        eval_dict = {}
+        eval_reward = eval_d4rl(
+            rng_eval,
+            offline_trainer,
+            offline_train_state.actor,
+            env,
+            config.num_test_rollouts,
+            obs_mean,
+            obs_std,
+            config,
+        )
+        eval_rew_normed = env.get_normalized_score(eval_reward) * 100
+        eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
+        eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
+        eval_dict[f"offline/step"] = total_steps
+        t.set_description(
+            f"TD3-BC/{config.env_name} R_te: {eval_reward:.2f}, {eval_rew_normed:.2f}"
+        )
+        t.refresh()
 
-            wandb.log(eval_dict)
-            log_steps.append(total_steps)
-            log_return.append(eval_dict)
+        wandb.log(eval_dict)
+        log_steps.append(total_steps)
+        log_return.append(eval_dict)
     wandb.finish()
     return (
         log_steps,
         log_return,
         offline_train_state.actor.params,
     )
+
 
 train_offline_d4rl()
