@@ -19,6 +19,7 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tensorflow_probability.substrates import jax as tfp
+from tqdm import tqdm
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -50,6 +51,13 @@ class TD3BCConfig:
 
 config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
 
+env = gym.make(f"{config.env_name.lower()}-{config.data_quality}-v2")
+dataset = d4rl.qlearning_dataset(env)
+obs_dim = dataset["observations"].shape[-1]
+action_space = env.action_space
+act_dim = action_space.shape[0]
+max_action = action_space.high
+
 
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
@@ -66,8 +74,6 @@ class ReplayBuffer(NamedTuple):
 class DoubleCritic(nn.Module):
     num_hidden_units: int
     num_hidden_layers: int
-    prefix: str = "critic"
-    model_name: str = "double_critic"
 
     @nn.compact
     def __call__(self, state, action, rng):
@@ -114,8 +120,6 @@ class TD3Actor(nn.Module):
     num_hidden_units: int
     num_hidden_layers: int
     max_action: float
-    prefix: str = "actor"
-    model_name: str = "actor"
 
     @nn.compact
     def __call__(self, state, rng):
@@ -149,11 +153,7 @@ class TD3BCTrainState:
     update_idx: jnp.int32
 
 
-
 def get_models(
-    obs_dim: int,
-    act_dim: int,
-    max_action: float,
     rng: jax.random.PRNGKey,
 ) -> TD3BCTrainState:
     critic_model = DoubleCritic(
@@ -240,9 +240,7 @@ def make_update_steps_fn(
                 max_action,
                 subkey,
             )
-            train_state_critic = train_state_critic.apply_gradients(
-                grads=critic_grads
-            )
+            train_state_critic = train_state_critic.apply_gradients(grads=critic_grads)
             actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
             actor_loss, actor_grads = actor_grad_fn(
                 train_state_actor.params,
@@ -253,9 +251,7 @@ def make_update_steps_fn(
                 action,
                 config.td3_alpha,
             )
-            new_train_state_actor = train_state_actor.apply_gradients(
-                grads=actor_grads
-            )
+            new_train_state_actor = train_state_actor.apply_gradients(grads=actor_grads)
             train_state_actor = jax.lax.cond(
                 offline_train_state.update_idx % config.policy_freq == 0,
                 lambda: new_train_state_actor,
@@ -291,29 +287,14 @@ def make_update_steps_fn(
 
     return update_steps_fn
 
-@partial(jax.jit, static_argnames=("self", "config", "exploration_noise"))
+
+@partial(jax.jit)
 def get_action(
     actor_train_state: TrainState,
     obs: jnp.ndarray,
-    rng: jax.random.PRNGKey,
-    config: TD3BCConfig,
-    exploration_noise: bool = True,
 ) -> jnp.ndarray:
-    action = actor_train_state.apply_fn(actor_train_state.params, obs, rng=None)
-
-    if exploration_noise:
-        warnings.warn("TD3BC with exploration noise is probably not useful.")
-        noise = (
-            config.online.exploration_std
-            * self.action_space.high
-            * jax.random.normal(rng, action.shape)
-        )
-        action = action + noise.clip(
-            -self.config.online.exploration_clip,
-            self.config.online.exploration_clip,
-        )
-
-    action = action.clip(self.action_space.low, self.action_space.high)
+    action = actor_train_state.apply_fn(actor_train_state.params, obs)
+    action = action.clip(action_space.low, action_space.high)
     return action
 
 
@@ -409,58 +390,35 @@ def get_critic_loss(
 
 def eval_d4rl(
     subkey: jax.random.PRNGKey,
-    actor_trainer: RLTrainer,
     actor_trainstate: TrainState,
     env: gym.Env,
-    n_episodes: int,
     obs_mean,
     obs_std,
-    config: TD3BCConfig,
-    vae=None,
 ) -> float:
     episode_rews = []
-    for _ in range(n_episodes):
+    for _ in range(config.num_test_rollouts):
         obs = env.reset()
         done = False
         episode_rew = 0.0
-        i = 0
         while not done:
-            rng, subkey = jax.random.split(subkey)
-            obs = (obs - obs_mean) / obs_std
-            obs = jnp.array(obs)
-            action = actor_trainer.get_action(
+            obs = jnp.array((obs - obs_mean) / obs_std)
+            action = get_action(
                 actor_train_state=actor_trainstate,
-                obs=obs,
-                rng=subkey,
-                config=config,
-                exploration_noise=False,
+                obs=obs
             )
             action = action.reshape(-1)
-            last_obs = obs
             obs, rew, done, info = env.step(action)
             episode_rew += rew
-            i += 1
         episode_rews.append(episode_rew)
     return np.mean(episode_rews)
 
 
-def train_offline_d4rl():
-    """
-    Offline Training Loop.
-    """
-    print("loading dataset")
+if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     wandb.init(
         project="train-" + "TD3-BC",
         config=config,
     )
-    env = gym.make(f"{config.env_name.lower()}-{config.data_quality}-v2")
-    dataset = d4rl.qlearning_dataset(env)
-    env_obs_dim = dataset["observations"].shape[-1]
-    action_space = env.action_space
-    act_dim = action_space.shape[0]
-    max_action = action_space.high
-
     buffer = ReplayBuffer(
         states=jnp.asarray(dataset["observations"]),
         actions=jnp.asarray(dataset["actions"]),
@@ -484,18 +442,13 @@ def train_offline_d4rl():
         states=(buffer.states - obs_mean) / obs_std,
         next_states=(buffer.next_states - obs_mean) / obs_std,
     )
-
-    offline_trainer = TD3BCTrainer(config=config, action_space=action_space)
-
-    offline_train_state = offline_trainer.get_models(
-        env_obs_dim, act_dim, max_action, config, rng
-    )
+    offline_train_state = get_models(rng)
 
     total_steps = 0
     log_steps, log_return = [], []
     num_total_its = int(config.train_steps) // config.evaluate_every_epochs
 
-    update_steps_fn = offline_trainer.make_update_steps_fn(
+    update_steps_fn = make_update_steps_fn(
         buffer,
         len(buffer.states),
         config.evaluate_every_epochs,
@@ -507,42 +460,25 @@ def train_offline_d4rl():
 
     for it in tqdm(range(num_total_its)):
         total_steps += 1
-        t.update(config.evaluate_every_epochs)
         rng, rng_eval, rng_update = jax.random.split(rng, 3)
         offline_train_state = jit_update_steps_fn(
             offline_train_state,
             rng_update,
         )
-        rng, rng_eval = jax.random.split(rng)
         eval_dict = {}
         eval_reward = eval_d4rl(
             rng_eval,
-            offline_trainer,
             offline_train_state.actor,
             env,
-            config.num_test_rollouts,
             obs_mean,
             obs_std,
-            config,
         )
         eval_rew_normed = env.get_normalized_score(eval_reward) * 100
         eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
         eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
         eval_dict[f"offline/step"] = total_steps
-        t.set_description(
-            f"TD3-BC/{config.env_name} R_te: {eval_reward:.2f}, {eval_rew_normed:.2f}"
-        )
-        t.refresh()
-
+        print(eval_dict)
         wandb.log(eval_dict)
         log_steps.append(total_steps)
         log_return.append(eval_dict)
     wandb.finish()
-    return (
-        log_steps,
-        log_return,
-        offline_train_state.actor.params,
-    )
-
-
-train_offline_d4rl()
