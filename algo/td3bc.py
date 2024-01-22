@@ -140,40 +140,6 @@ class TD3Actor(nn.Module):
         return action
 
 
-class RLTrainer(object):
-    def get_models(
-        self,
-        obs_dim: int,
-        act_dim: int,
-        max_action: float,
-        config: TD3BCConfig,
-        rng: jax.random.PRNGKey,
-    ):
-        raise NotImplementedError()
-
-    def sample_buff_and_update_n_times(
-        self,
-        train_state,
-        buffer,
-        num_existing_samples: int,
-        max_action: float,
-        action_dim: int,
-        rng: jax.random.PRNGKey,
-        config: TD3BCConfig,
-    ) -> Tuple[TrainState, dict[str, float]]:
-        raise NotImplementedError()
-
-    def get_action(
-        self,
-        actor_train_state: TrainState,
-        obs: jnp.ndarray,
-        rng: jax.random.PRNGKey,
-        config: TD3BCConfig,
-        exploration_noise: bool = True,
-    ) -> jnp.ndarray:
-        raise NotImplementedError()
-
-
 @struct.dataclass
 class TD3BCTrainState:
     critic: TrainState
@@ -183,181 +149,172 @@ class TD3BCTrainState:
     update_idx: jnp.int32
 
 
-class TD3BCTrainer(RLTrainer):
-    def __init__(self, config: TD3BCConfig, action_space) -> None:
-        super().__init__()
-        self.config = config
-        self.action_space = action_space
 
-    def get_models(
-        self,
-        obs_dim: int,
-        act_dim: int,
-        max_action: float,
-        config: TD3BCConfig,
+def get_models(
+    obs_dim: int,
+    act_dim: int,
+    max_action: float,
+    rng: jax.random.PRNGKey,
+) -> TD3BCTrainState:
+    critic_model = DoubleCritic(
+        num_hidden_layers=config.num_hidden_layers,
+        num_hidden_units=config.num_hidden_units,
+    )
+    actor_model = TD3Actor(
+        act_dim,
+        num_hidden_layers=config.num_hidden_layers,
+        num_hidden_units=config.num_hidden_units,
+        max_action=max_action,
+    )
+    # Initialize the network based on the observation shape
+    rng, rng1, rng2 = jax.random.split(rng, 3)
+    critic_params = critic_model.init(
+        rng1, state=jnp.zeros(obs_dim), action=jnp.zeros(act_dim), rng=rng1
+    )
+    critic_params_target = critic_model.init(
+        rng1, jnp.zeros(obs_dim), jnp.zeros(act_dim), rng=rng1
+    )
+    actor_params = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
+    actor_params_target = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
+
+    critic_train_state = TrainState.create(
+        apply_fn=critic_model.apply,
+        params=critic_params,
+        tx=optax.adam(config.critic_lr),
+    )
+    actor_train_state = TrainState.create(
+        apply_fn=actor_model.apply,
+        params=actor_params,
+        tx=optax.adam(config.actor_lr),
+    )
+    return TD3BCTrainState(
+        critic=critic_train_state,
+        actor=actor_train_state,
+        critic_params_target=critic_params_target,
+        actor_params_target=actor_params_target,
+        update_idx=0,
+    )
+
+
+def make_update_steps_fn(
+    buffer: ReplayBuffer,
+    num_existing_samples: int,
+    update_steps: int,
+    max_action: float,
+    action_dim: int,
+    config: TD3BCConfig,
+) -> Tuple[dict, TD3BCTrainState]:
+    def update_steps_fn(
+        offline_train_state: TD3BCTrainState,
         rng: jax.random.PRNGKey,
-    ) -> TD3BCTrainState:
-        critic_model = DoubleCritic(
-            num_hidden_layers=config.num_hidden_layers,
-            num_hidden_units=config.num_hidden_units,
-        )
-        actor_model = TD3Actor(
-            act_dim,
-            num_hidden_layers=config.num_hidden_layers,
-            num_hidden_units=config.num_hidden_units,
-            max_action=max_action,
-        )
-        # Initialize the network based on the observation shape
-        rng, rng1, rng2 = jax.random.split(rng, 3)
-        critic_params = critic_model.init(
-            rng1, state=jnp.zeros(obs_dim), action=jnp.zeros(act_dim), rng=rng1
-        )
-        critic_params_target = critic_model.init(
-            rng1, jnp.zeros(obs_dim), jnp.zeros(act_dim), rng=rng1
-        )
-        actor_params = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
-        actor_params_target = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
-
-        critic_train_state = TrainState.create(
-            apply_fn=critic_model.apply,
-            params=critic_params,
-            tx=optax.adam(config.critic_lr),
-        )
-        actor_train_state = TrainState.create(
-            apply_fn=actor_model.apply,
-            params=actor_params,
-            tx=optax.adam(config.actor_lr),
-        )
-
-        return TD3BCTrainState(
-            critic=critic_train_state,
-            actor=actor_train_state,
-            critic_params_target=critic_params_target,
-            actor_params_target=actor_params_target,
-            update_idx=0,
-        )
-
-    def make_update_steps_fn(
-        self,
-        buffer: ReplayBuffer,
-        num_existing_samples: int,
-        update_steps: int,
-        max_action: float,
-        action_dim: int,
-        config: TD3BCConfig,
-    ) -> Tuple[dict, TD3BCTrainState]:
-        def update_steps_fn(
+    ):
+        def update_step_fn(
             offline_train_state: TD3BCTrainState,
             rng: jax.random.PRNGKey,
         ):
-            def update_step_fn(
-                offline_train_state: TD3BCTrainState,
-                rng: jax.random.PRNGKey,
-            ):
-                train_state_critic = offline_train_state.critic
-                train_state_actor = offline_train_state.actor
-                critic_params_target = offline_train_state.critic_params_target
-                actor_params_target = offline_train_state.actor_params_target
+            train_state_critic = offline_train_state.critic
+            train_state_actor = offline_train_state.actor
+            critic_params_target = offline_train_state.critic_params_target
+            actor_params_target = offline_train_state.actor_params_target
 
-                rng, subkey = jax.random.split(rng)
-                obs, action, reward, next_obs, done = sample_batch(
-                    buffer, num_existing_samples, config, subkey
-                )
-                rng, subkey = jax.random.split(rng)
-                critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
-                critic_loss, critic_grads = critic_grad_fn(
-                    train_state_critic.params,
-                    critic_params_target,
-                    actor_params_target,
-                    train_state_critic.apply_fn,
-                    train_state_actor.apply_fn,
-                    obs,
-                    action,
-                    reward,
-                    done,
-                    next_obs,
-                    config.gamma,
-                    config.td3_policy_noise_std,
-                    config.td3_policy_noise_std,
-                    max_action,
-                    subkey,
-                )
-                train_state_critic = train_state_critic.apply_gradients(
-                    grads=critic_grads
-                )
-                actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
-                actor_loss, actor_grads = actor_grad_fn(
-                    train_state_actor.params,
-                    train_state_critic.params,
-                    train_state_actor.apply_fn,
-                    train_state_critic.apply_fn,
-                    obs,
-                    action,
-                    config.td3_alpha,
-                )
-                new_train_state_actor = train_state_actor.apply_gradients(
-                    grads=actor_grads
-                )
-                train_state_actor = jax.lax.cond(
-                    offline_train_state.update_idx % config.policy_freq == 0,
-                    lambda: new_train_state_actor,
-                    lambda: train_state_actor,
-                )
-                # update target network
-                critic_params_target = jax.tree_map(
-                    lambda target, live: config.polyak * target
-                    + (1.0 - config.polyak) * live,
-                    critic_params_target,
-                    train_state_critic.params,
-                )
-                actor_params_target = jax.tree_map(
-                    lambda target, live: config.polyak * target
-                    + (1.0 - config.polyak) * live,
-                    actor_params_target,
-                    train_state_actor.params,
-                )
-                offline_train_state = TD3BCTrainState(
-                    critic=train_state_critic,
-                    actor=train_state_actor,
-                    critic_params_target=critic_params_target,
-                    actor_params_target=actor_params_target,
-                    update_idx=offline_train_state.update_idx + 1,
-                )
-                return offline_train_state, None
-
-            rng_keys = jax.random.split(rng, update_steps)
-            offline_train_state, _ = jax.lax.scan(
-                update_step_fn, offline_train_state, rng_keys
+            rng, subkey = jax.random.split(rng)
+            obs, action, reward, next_obs, done = sample_batch(
+                buffer, num_existing_samples, config, subkey
             )
-            return offline_train_state
-
-        return update_steps_fn
-
-    @partial(jax.jit, static_argnames=("self", "config", "exploration_noise"))
-    def get_action(
-        self,
-        actor_train_state: TrainState,
-        obs: jnp.ndarray,
-        rng: jax.random.PRNGKey,
-        config: TD3BCConfig,
-        exploration_noise: bool = True,
-    ) -> jnp.ndarray:
-        action = actor_train_state.apply_fn(actor_train_state.params, obs, rng=None)
-
-        if exploration_noise:
-            warnings.warn("TD3BC with exploration noise is probably not useful.")
-            noise = (
-                config.online.exploration_std
-                * self.action_space.high
-                * jax.random.normal(rng, action.shape)
+            rng, subkey = jax.random.split(rng)
+            critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
+            critic_loss, critic_grads = critic_grad_fn(
+                train_state_critic.params,
+                critic_params_target,
+                actor_params_target,
+                train_state_critic.apply_fn,
+                train_state_actor.apply_fn,
+                obs,
+                action,
+                reward,
+                done,
+                next_obs,
+                config.gamma,
+                config.td3_policy_noise_std,
+                config.td3_policy_noise_std,
+                max_action,
+                subkey,
             )
-            action = action + noise.clip(
-                -self.config.online.exploration_clip,
-                self.config.online.exploration_clip,
+            train_state_critic = train_state_critic.apply_gradients(
+                grads=critic_grads
             )
+            actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
+            actor_loss, actor_grads = actor_grad_fn(
+                train_state_actor.params,
+                train_state_critic.params,
+                train_state_actor.apply_fn,
+                train_state_critic.apply_fn,
+                obs,
+                action,
+                config.td3_alpha,
+            )
+            new_train_state_actor = train_state_actor.apply_gradients(
+                grads=actor_grads
+            )
+            train_state_actor = jax.lax.cond(
+                offline_train_state.update_idx % config.policy_freq == 0,
+                lambda: new_train_state_actor,
+                lambda: train_state_actor,
+            )
+            # update target network
+            critic_params_target = jax.tree_map(
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
+                critic_params_target,
+                train_state_critic.params,
+            )
+            actor_params_target = jax.tree_map(
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
+                actor_params_target,
+                train_state_actor.params,
+            )
+            offline_train_state = TD3BCTrainState(
+                critic=train_state_critic,
+                actor=train_state_actor,
+                critic_params_target=critic_params_target,
+                actor_params_target=actor_params_target,
+                update_idx=offline_train_state.update_idx + 1,
+            )
+            return offline_train_state, None
 
-        action = action.clip(self.action_space.low, self.action_space.high)
-        return action
+        rng_keys = jax.random.split(rng, update_steps)
+        offline_train_state, _ = jax.lax.scan(
+            update_step_fn, offline_train_state, rng_keys
+        )
+        return offline_train_state
+
+    return update_steps_fn
+
+@partial(jax.jit, static_argnames=("self", "config", "exploration_noise"))
+def get_action(
+    actor_train_state: TrainState,
+    obs: jnp.ndarray,
+    rng: jax.random.PRNGKey,
+    config: TD3BCConfig,
+    exploration_noise: bool = True,
+) -> jnp.ndarray:
+    action = actor_train_state.apply_fn(actor_train_state.params, obs, rng=None)
+
+    if exploration_noise:
+        warnings.warn("TD3BC with exploration noise is probably not useful.")
+        noise = (
+            config.online.exploration_std
+            * self.action_space.high
+            * jax.random.normal(rng, action.shape)
+        )
+        action = action + noise.clip(
+            -self.config.online.exploration_clip,
+            self.config.online.exploration_clip,
+        )
+
+    action = action.clip(self.action_space.low, self.action_space.high)
+    return action
 
 
 @partial(jax.jit, static_argnames=("config"))
