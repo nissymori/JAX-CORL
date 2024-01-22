@@ -638,6 +638,7 @@ def train_offline_d4rl():
         desc=f"TD3-BC",
         leave=True,
     )
+    start_time = time.time()
     for it in range(num_total_its):
         segment_timer.new_segment("updating")
         total_steps += config.n_updates_jit
@@ -689,6 +690,7 @@ def train_offline_d4rl():
             wandb.log(eval_dict)
             log_steps.append(total_steps)
             log_return.append(eval_dict)
+    print(f"Total time: {time.time() - start_time:.2f}s")
     wandb.finish()
     return (
         log_steps,
