@@ -6,9 +6,9 @@ import d4rl
 import flax
 import flax.linen as nn
 import gym
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import tqdm
 import wandb
@@ -44,6 +44,7 @@ class TD3BCConfig:
 
 config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
 
+
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
 
@@ -52,6 +53,7 @@ class DoubleCritic(nn.Module):
     """
     For twin Q networks
     """
+
     @nn.compact
     def __call__(self, state, action, rng):
         sa = jnp.concatenate([state, action], axis=-1)
@@ -88,7 +90,9 @@ class TD3Actor(nn.Module):
             x_a = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_a)
             x_a = nn.relu(x_a)
         action = nn.Dense(action_dim, kernel_init=default_init())(x_a)
-        action = self.max_action * jnp.tanh(action) # scale to [-max_action, max_action]
+        action = self.max_action * jnp.tanh(
+            action
+        )  # scale to [-max_action, max_action]
         return action
 
 
@@ -100,7 +104,9 @@ class TD3BCUpdateState(NamedTuple):
     update_idx: jnp.int32
 
 
-def initialize_update_state(observation_dim, action_dim, max_action, rng) -> TD3BCUpdateState:
+def initialize_update_state(
+    observation_dim, action_dim, max_action, rng
+) -> TD3BCUpdateState:
     critic_model = DoubleCritic()
     actor_model = TD3Actor(action_dim=action_dim, max_action=max_action)
     rng, rng1, rng2 = jax.random.split(rng, 3)
@@ -119,7 +125,7 @@ def initialize_update_state(observation_dim, action_dim, max_action, rng) -> TD3
         params=critic_params,
         tx=optax.adam(config.critic_lr),
     )
-    actor_train_state:TrainState = TrainState.create(
+    actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_params,
         tx=optax.adam(config.actor_lr),
@@ -141,7 +147,9 @@ class ReplayBuffer(NamedTuple):
     dones: jnp.ndarray
 
 
-def initilize_buffer(dataset: dict, rng: jax.random.PRNGKey) -> Tuple[ReplayBuffer, np.ndarray, np.ndarray]:
+def initilize_buffer(
+    dataset: dict, rng: jax.random.PRNGKey
+) -> Tuple[ReplayBuffer, np.ndarray, np.ndarray]:
     rng, subkey = jax.random.split(rng)
     buffer = ReplayBuffer(
         states=jnp.asarray(dataset["observations"]),
@@ -155,7 +163,7 @@ def initilize_buffer(dataset: dict, rng: jax.random.PRNGKey) -> Tuple[ReplayBuff
     perm = jax.random.permutation(rng_permute, len(buffer.states))
     buffer = jax.tree_map(lambda x: x[perm], buffer)
     assert len(buffer.states) >= config.buffer_size
-    buffer = jax.tree_map(lambda x: x[:config.buffer_size], buffer)
+    buffer = jax.tree_map(lambda x: x[: config.buffer_size], buffer)
     # normalize states and next_states
     obs_mean = jnp.mean(buffer.states, axis=0)
     obs_std = jnp.std(buffer.states, axis=0)
@@ -165,7 +173,7 @@ def initilize_buffer(dataset: dict, rng: jax.random.PRNGKey) -> Tuple[ReplayBuff
     )
     return buffer, obs_mean, obs_std
 
-    
+
 def update_actor(
     update_state: TD3BCUpdateState, batch: ReplayBuffer, rng: jax.random.PRNGKey
 ) -> TD3BCUpdateState:
@@ -198,7 +206,10 @@ def update_actor(
 
 
 def update_critic(
-    update_state: TD3BCUpdateState, batch: ReplayBuffer, max_action, rng: jax.random.PRNGKey
+    update_state: TD3BCUpdateState,
+    batch: ReplayBuffer,
+    max_action,
+    rng: jax.random.PRNGKey,
 ) -> TD3BCUpdateState:
     """
     Update critic using the following loss:
@@ -209,8 +220,9 @@ def update_critic(
     def critic_loss(
         critic_params: flax.core.frozen_dict.FrozenDict,
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        q_pred_1, q_pred_2 = critic.apply_fn(critic_params, batch.states, batch.actions, rng=None)
-
+        q_pred_1, q_pred_2 = critic.apply_fn(
+            critic_params, batch.states, batch.actions, rng=None
+        )  # twin Q networks
         target_next_action = actor.apply_fn(
             update_state.actor_params_target, batch.next_states, rng=None
         )
@@ -229,9 +241,9 @@ def update_critic(
             target_next_action,
             rng=None,
         )  # twin Q networks
-        target = batch.rewards[..., None] + config.gamma * jnp.minimum(q_next_1, q_next_2) * (
-            1 - batch.dones[..., None]
-        )
+        target = batch.rewards[..., None] + config.gamma * jnp.minimum(
+            q_next_1, q_next_2
+        ) * (1 - batch.dones[..., None])  # take the min of the two Q networks
         target = jax.lax.stop_gradient(target)
         value_loss_1 = jnp.square(q_pred_1 - target)
         value_loss_2 = jnp.square(q_pred_2 - target)
@@ -255,10 +267,12 @@ def make_update_steps_fn(
         def update_step_fn(
             update_state: TD3BCUpdateState,
             rng: jax.random.PRNGKey,
-        ):  
+        ):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             # sample batch
-            batch_idx = jax.random.randint(batch_rng, (config.batch_size,), 0, len(batches.states))
+            batch_idx = jax.random.randint(
+                batch_rng, (config.batch_size,), 0, len(batches.states)
+            )
             batch = jax.tree_map(lambda x: x[batch_idx], batches)
             # update critic
             update_state = update_critic(update_state, batch, max_action, critic_rng)
@@ -282,14 +296,19 @@ def make_update_steps_fn(
                 update_state.actor_params_target,
                 update_state.actor.params,
             )
-            return update_state._replace(
-                critic_params_target=critic_params_target,
-                actor_params_target=actor_params_target,
-                update_idx=update_state.update_idx + 1,
-            ), None
+            return (
+                update_state._replace(
+                    critic_params_target=critic_params_target,
+                    actor_params_target=actor_params_target,
+                    update_idx=update_state.update_idx + 1,
+                ),
+                None,
+            )
+
         rngs = jax.random.split(rng, config.updates_per_epoch)
         update_state, _ = jax.lax.scan(update_step_fn, update_state, rngs)
         return update_state
+
     return update_steps_fn
 
 
@@ -319,12 +338,19 @@ def eval_d4rl(
         episode_rew = 0.0
         while not done:
             obs = jnp.array((obs - obs_mean) / obs_std)
-            action = get_action(actor=actor, obs=obs, low=env.action_space.low, high=env.action_space.high)
+            action = get_action(
+                actor=actor,
+                obs=obs,
+                low=env.action_space.low,
+                high=env.action_space.high,
+            )
             action = action.reshape(-1)
             obs, rew, done, info = env.step(action)
             episode_rew += rew
         episode_rews.append(episode_rew)
-    return env.get_normalized_score(np.mean(episode_rews)) * 100  # average normalized score
+    return (
+        env.get_normalized_score(np.mean(episode_rews)) * 100
+    )  # average normalized score
 
 
 if __name__ == "__main__":
@@ -339,11 +365,13 @@ if __name__ == "__main__":
     rng, buffer_rng, model_rng = jax.random.split(rng, 3)
     # initialize buffer and update state
     buffer, obs_mean, obs_std = initilize_buffer(dataset, buffer_rng)
-    update_state = initialize_update_state(observation_dim, action_dim, max_action, model_rng)
+    update_state = initialize_update_state(
+        observation_dim, action_dim, max_action, model_rng
+    )
     # initialize update steps function
     update_steps_fn = make_update_steps_fn(buffer, max_action)
     jit_update_steps_fn = jax.jit(update_steps_fn)
-    
+
     wandb.init(project="train-TD3-BC", config=config)
     total_steps = 0
     num_total_its = int(config.total_updates) // config.updates_per_epoch
@@ -352,7 +380,7 @@ if __name__ == "__main__":
         total_steps += 1
         rng, batch_rng, update_rng, eval_rng = jax.random.split(rng, 4)
         # update parameters
-        update_state = jit_update_steps_fn(update_state, update_rng) 
+        update_state = jit_update_steps_fn(update_state, update_rng)
         eval_dict = {}
         eval_rew_normed = eval_d4rl(
             eval_rng,
