@@ -7,6 +7,12 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 # Algorithms
 | Algorithm | copied single file | implementation | wandb report |
 |---|---|---|---|
+|CQL|   |   |   |
+|IQL|   |   |   |
+|TD3-BC|   |   |   |
+|TD7|   |   |   |
+|DT|   |   |   |
+
 
 
 # Implementation policy
