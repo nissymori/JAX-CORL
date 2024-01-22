@@ -108,40 +108,16 @@ class SegmentTimer(object):
 segment_timer = SegmentTimer("ImportsEtc.")
 
 
-class BufferManager:
-    def __init__(
-        self,
-    ):
-        pass
-
-    @partial(jax.jit, static_argnums=(0, 2))
-    def get(self, buffer, batch_size: int, rng):
-        idxes = jax.random.randint(rng, (batch_size,), 0, buffer["_p"])
-        batch = (
-            buffer["states"][idxes],
-            buffer["actions"][idxes],
-            buffer["rewards"][idxes],
-            buffer["next_states"][idxes],
-            buffer["dones"][idxes],
-        )
-        return batch
-
-    def from_dataset(
-        self, ds: dict[np.ndarray], clip_to_eps: bool = True, eps: float = 1e-3
-    ):
-        buffer = {
-            "states": ds["observations"],
-            "actions": ds["actions"],
-            "rewards": ds["rewards"],
-            "next_states": ds["next_observations"],
-            "dones": ds["terminals"],
-        }
-        buffer["_p"] = buffer["states"].shape[0]
-        return buffer
-
-
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
+
+
+class ReplayBuffer(NamedTuple):
+    states: jnp.ndarray
+    actions: jnp.ndarray
+    next_states: jnp.ndarray
+    rewards: jnp.ndarray
+    dones: jnp.ndarray
 
 
 class DoubleCritic(nn.Module):
@@ -454,11 +430,11 @@ class TD3BCTrainer(RLTrainer):
 @partial(jax.jit, static_argnames=("config"))
 def sample_batch(buffer, num_existing_samples, config, rng):
     idxes = jax.random.randint(rng, (config.batch_size,), 0, num_existing_samples)
-    obs = buffer["states"][idxes]
-    action = buffer["actions"][idxes]
-    reward = buffer["rewards"][idxes]
-    next_obs = buffer["next_states"][idxes]
-    done = buffer["dones"][idxes]
+    obs = buffer.states[idxes]
+    action = buffer.actions[idxes]
+    reward = buffer.rewards[idxes]
+    next_obs = buffer.next_states[idxes]
+    done = buffer.dones[idxes]
     return obs, action, reward, next_obs, done
 
 
@@ -588,10 +564,12 @@ def normalize_dataset(
     If we don't have predictor, we normalize based on the whole dataset (vanilla).
     """
     print("normalizing")
-    obs_mean = np.mean(buffer["states"], axis=0)
-    obs_std = np.std(buffer["states"], axis=0)
-    buffer["states"] = (buffer["states"] - obs_mean) / obs_std
-    buffer["next_states"] = (buffer["next_states"] - obs_mean) / obs_std
+    obs_mean = np.mean(buffer.states, axis=0)
+    obs_std = np.std(buffer.states, axis=0)
+    buffer = buffer._replace(
+        states=(buffer["states"] - obs_mean) / obs_std
+        next_states=(buffer["next_states"] - obs_mean) / obs_std
+    )
     return buffer, obs_mean, obs_std
 
 
@@ -612,8 +590,13 @@ def train_offline_d4rl():
     act_dim = action_space.shape[0]
     max_action = action_space.high
 
-    buffer_manager = BufferManager()
-    buffer = buffer_manager.from_dataset(dataset)
+    buffer = ReplayBuffer(
+        states=jnp.asarray(dataset["observations"]),
+        actions=jnp.asarray(dataset["actions"]),
+        next_states=jnp.asarray(dataset["next_observations"]),
+        rewards=jnp.asarray(dataset["rewards"]),
+        dones=jnp.asarray(dataset["terminals"]),
+    )
 
     offline_trainer = TD3BCTrainer(config=config, action_space=action_space)
 
