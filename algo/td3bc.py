@@ -45,8 +45,8 @@ class TD3BCConfig:
     policy_freq: int = 2
     polyak: float = 0.995
     td3_alpha: float = 2.5
-    td3_policy_noise_std: float = 0.2
-    td3_policy_noise_clip: float = 0.5
+    policy_noise_std: float = 0.2
+    policy_noise_clip: float = 0.5
 
 
 config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
@@ -195,6 +195,7 @@ def get_models(
         update_idx=0,
     )
 
+
 def get_actor_loss(
     actor_params: flax.core.frozen_dict.FrozenDict,
     critic_params: flax.core.frozen_dict.FrozenDict,
@@ -226,52 +227,53 @@ def get_actor_loss(
     )
 
 
-def get_critic_loss(
-    critic_params: flax.core.frozen_dict.FrozenDict,
-    critic_target_params: flax.core.frozen_dict.FrozenDict,
-    actor_target_params: flax.core.frozen_dict.FrozenDict,
-    critic_apply_fn: Callable[..., Any],
-    actor_apply_fn: Callable[..., Any],
-    obs: jnp.ndarray,
-    action: jnp.ndarray,
-    reward: jnp.ndarray,
-    done: jnp.ndarray,
-    next_obs: jnp.ndarray,
-    decay: float,
-    policy_noise_std: float,
-    policy_noise_clip: float,
-    max_action: float,
-    rng_key: jax.random.PRNGKey,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    q_pred_1, q_pred_2 = critic_apply_fn(critic_params, obs, action, rng=None)
+def update_critic(
+    train_state: TD3BCTrainState, batch: ReplayBuffer, rng_key: jax.random.PRNGKey
+):
+    actor, critic = train_state.actor, train_state.critic
+    obs, action, reward, next_obs, done = batch
+    def critic_loss(
+        critic_params: flax.core.frozen_dict.FrozenDict,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        q_pred_1, q_pred_2 = critic.apply_fn(
+            critic_params, obs, action, rng=None
+        )
 
-    target_next_action = actor_apply_fn(actor_target_params, next_obs, rng=None)
-    policy_noise = (
-        policy_noise_std * max_action * jax.random.normal(rng_key, action.shape)
-    )
-    target_next_action = target_next_action + policy_noise.clip(
-        -policy_noise_clip, policy_noise_clip
-    )
-    target_next_action = target_next_action.clip(-max_action, max_action)
+        target_next_action = actor.apply_fn(
+            train_state.actor_params_target, next_obs, rng=None
+        )
+        policy_noise = (
+            config.policy_noise_std
+            * max_action
+            * jax.random.normal(rng_key, action.shape)
+        )
+        target_next_action = target_next_action + policy_noise.clip(
+            -config.policy_noise_clip, config.policy_noise_clip
+        )
+        target_next_action = target_next_action.clip(-max_action, max_action)
+        q_next_1, q_next_2 = critic.apply_fn(
+            train_state.critic_params_target,
+            next_obs,
+            target_next_action,
+            rng=None,
+        )
+        target = reward[..., None] + config.gamma * jnp.minimum(q_next_1, q_next_2) * (
+            1 - done[..., None]
+        )
+        target = jax.lax.stop_gradient(target)
+        value_loss_1 = jnp.square(q_pred_1 - target)
+        value_loss_2 = jnp.square(q_pred_2 - target)
+        value_loss = (value_loss_1 + value_loss_2).mean()
+        return value_loss, (
+            value_loss_1.mean(),
+            value_loss_2.mean(),
+            target.mean(),
+        )
 
-    q_next_1, q_next_2 = critic_apply_fn(
-        critic_target_params, next_obs, target_next_action, rng=None
-    )
-
-    target = reward[..., None] + decay * jnp.minimum(q_next_1, q_next_2) * (
-        1 - done[..., None]
-    )
-    target = jax.lax.stop_gradient(target)
-
-    value_loss_1 = jnp.square(q_pred_1 - target)
-    value_loss_2 = jnp.square(q_pred_2 - target)
-    value_loss = (value_loss_1 + value_loss_2).mean()
-
-    return value_loss, (
-        value_loss_1.mean(),
-        value_loss_2.mean(),
-        target.mean(),
-    )
+    critic_grad_fn = jax.value_and_grad(critic_loss, has_aux=True)
+    critic_loss, critic_grads = critic_grad_fn(critic.params)
+    critic = critic.apply_gradients(grads=critic_grads)
+    return critic
 
 
 def make_update_steps_fn(
@@ -296,29 +298,13 @@ def make_update_steps_fn(
             actor_params_target = offline_train_state.actor_params_target
 
             rng, subkey = jax.random.split(rng)
-            obs, action, reward, next_obs, done = sample_batch(
+            batch = sample_batch(
                 buffer, num_existing_samples, config, subkey
             )
             rng, subkey = jax.random.split(rng)
-            critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
-            critic_loss, critic_grads = critic_grad_fn(
-                train_state_critic.params,
-                critic_params_target,
-                actor_params_target,
-                train_state_critic.apply_fn,
-                train_state_actor.apply_fn,
-                obs,
-                action,
-                reward,
-                done,
-                next_obs,
-                config.gamma,
-                config.td3_policy_noise_std,
-                config.td3_policy_noise_std,
-                max_action,
-                subkey,
-            )
-            train_state_critic = train_state_critic.apply_gradients(grads=critic_grads)
+            train_state_critic = update_critic(offline_train_state, batch, subkey)
+
+            obs, action, reward, next_obs, done = batch
             actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
             actor_loss, actor_grads = actor_grad_fn(
                 train_state_actor.params,
@@ -384,7 +370,7 @@ def sample_batch(buffer, num_existing_samples, config, rng):
     reward = buffer.rewards[idxes]
     next_obs = buffer.next_states[idxes]
     done = buffer.dones[idxes]
-    return obs, action, reward, next_obs, done
+    return (obs, action, reward, next_obs, done)
 
 
 def eval_d4rl(
@@ -401,10 +387,7 @@ def eval_d4rl(
         episode_rew = 0.0
         while not done:
             obs = jnp.array((obs - obs_mean) / obs_std)
-            action = get_action(
-                actor_train_state=actor_trainstate,
-                obs=obs
-            )
+            action = get_action(actor_train_state=actor_trainstate, obs=obs)
             action = action.reshape(-1)
             obs, rew, done, info = env.step(action)
             episode_rew += rew
