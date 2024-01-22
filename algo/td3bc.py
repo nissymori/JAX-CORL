@@ -19,6 +19,7 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tensorflow_probability.substrates import jax as tfp
+from tqdm import tqdm
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -50,61 +51,12 @@ class TD3BCConfig:
 
 config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
 
-
-class SegmentTimer(object):
-    def __init__(self, first_segment_name: str = "InitialSegment") -> None:
-        self.start_time = time.time()
-        self.last_summary_time = self.start_time
-        self.last_segment_start = self.start_time
-        self.segment_name = first_segment_name
-
-        self.segment_averages = {}
-        self.segment_counts = {}
-
-    def new_segment(self, new_segment_name: str, quiet=True) -> None:
-        segment_duration = time.time() - self.last_segment_start
-
-        if self.segment_name in self.segment_averages:
-            prev_avg = self.segment_averages[self.segment_name]
-            prev_count = self.segment_counts[self.segment_name]
-            new_avg = (prev_avg * prev_count + segment_duration) / (prev_count + 1)
-            self.segment_averages[self.segment_name] = new_avg
-            self.segment_counts[self.segment_name] = prev_count + 1
-        else:
-            new_avg = segment_duration
-            prev_count = 0
-            self.segment_averages[self.segment_name] = new_avg
-            self.segment_counts[self.segment_name] = 1
-
-        if not quiet:
-            print(
-                f"{self.segment_name} took {segment_duration:.3f}s; avg {new_avg:.3f}s after {prev_count + 1} runs"
-            )
-
-        self.segment_name = new_segment_name
-        self.last_segment_start = time.time()
-
-    def summary(self) -> str:
-        self.last_summary_time = time.time()
-        return_str = ""
-        for segment_name in self.segment_averages.keys():
-            segment_duration = self.segment_averages[segment_name]
-            segment_count = self.segment_counts[segment_name]
-            if segment_name == self.segment_name:
-                segment_duration = (
-                    segment_duration * segment_count
-                    + time.time()
-                    - self.last_segment_start
-                ) / (segment_count + 1)
-                segment_count += 1
-            return_str += f"{segment_name}: avg {segment_duration:.3f}s; tot {segment_count * segment_duration:.3f}s \t"
-
-        self.segment_averages = {}
-        self.segment_counts = {}
-        return return_str[:-1]
-
-
-segment_timer = SegmentTimer("ImportsEtc.")
+env = gym.make(f"{config.env_name.lower()}-{config.data_quality}-v2")
+dataset = d4rl.qlearning_dataset(env)
+obs_dim = dataset["observations"].shape[-1]
+action_space = env.action_space
+act_dim = action_space.shape[0]
+max_action = action_space.high
 
 
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
@@ -122,8 +74,6 @@ class ReplayBuffer(NamedTuple):
 class DoubleCritic(nn.Module):
     num_hidden_units: int
     num_hidden_layers: int
-    prefix: str = "critic"
-    model_name: str = "double_critic"
 
     @nn.compact
     def __call__(self, state, action, rng):
@@ -170,8 +120,6 @@ class TD3Actor(nn.Module):
     num_hidden_units: int
     num_hidden_layers: int
     max_action: float
-    prefix: str = "actor"
-    model_name: str = "actor"
 
     @nn.compact
     def __call__(self, state, rng):
@@ -196,40 +144,6 @@ class TD3Actor(nn.Module):
         return action
 
 
-class RLTrainer(object):
-    def get_models(
-        self,
-        obs_dim: int,
-        act_dim: int,
-        max_action: float,
-        config: TD3BCConfig,
-        rng: jax.random.PRNGKey,
-    ):
-        raise NotImplementedError()
-
-    def sample_buff_and_update_n_times(
-        self,
-        train_state,
-        buffer,
-        num_existing_samples: int,
-        max_action: float,
-        action_dim: int,
-        rng: jax.random.PRNGKey,
-        config: TD3BCConfig,
-    ) -> Tuple[TrainState, dict[str, float]]:
-        raise NotImplementedError()
-
-    def get_action(
-        self,
-        actor_train_state: TrainState,
-        obs: jnp.ndarray,
-        rng: jax.random.PRNGKey,
-        config: TD3BCConfig,
-        exploration_noise: bool = True,
-    ) -> jnp.ndarray:
-        raise NotImplementedError()
-
-
 @struct.dataclass
 class TD3BCTrainState:
     critic: TrainState
@@ -239,193 +153,47 @@ class TD3BCTrainState:
     update_idx: jnp.int32
 
 
-class TD3BCTrainer(RLTrainer):
-    def __init__(self, config: TD3BCConfig, action_space) -> None:
-        super().__init__()
-        self.config = config
-        self.action_space = action_space
+def get_models(
+    rng: jax.random.PRNGKey,
+) -> TD3BCTrainState:
+    critic_model = DoubleCritic(
+        num_hidden_layers=config.num_hidden_layers,
+        num_hidden_units=config.num_hidden_units,
+    )
+    actor_model = TD3Actor(
+        act_dim,
+        num_hidden_layers=config.num_hidden_layers,
+        num_hidden_units=config.num_hidden_units,
+        max_action=max_action,
+    )
+    # Initialize the network based on the observation shape
+    rng, rng1, rng2 = jax.random.split(rng, 3)
+    critic_params = critic_model.init(
+        rng1, state=jnp.zeros(obs_dim), action=jnp.zeros(act_dim), rng=rng1
+    )
+    critic_params_target = critic_model.init(
+        rng1, jnp.zeros(obs_dim), jnp.zeros(act_dim), rng=rng1
+    )
+    actor_params = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
+    actor_params_target = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
 
-    def get_models(
-        self,
-        obs_dim: int,
-        act_dim: int,
-        max_action: float,
-        config: TD3BCConfig,
-        rng: jax.random.PRNGKey,
-    ) -> TD3BCTrainState:
-        critic_model = DoubleCritic(
-            num_hidden_layers=config.num_hidden_layers,
-            num_hidden_units=config.num_hidden_units,
-        )
-        actor_model = TD3Actor(
-            act_dim,
-            num_hidden_layers=config.num_hidden_layers,
-            num_hidden_units=config.num_hidden_units,
-            max_action=max_action,
-        )
-        # Initialize the network based on the observation shape
-        rng, rng1, rng2 = jax.random.split(rng, 3)
-        critic_params = critic_model.init(
-            rng1, state=jnp.zeros(obs_dim), action=jnp.zeros(act_dim), rng=rng1
-        )
-        critic_params_target = critic_model.init(
-            rng1, jnp.zeros(obs_dim), jnp.zeros(act_dim), rng=rng1
-        )
-        actor_params = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
-        actor_params_target = actor_model.init(rng2, jnp.zeros(obs_dim), rng=rng2)
-
-        critic_train_state = TrainState.create(
-            apply_fn=critic_model.apply,
-            params=critic_params,
-            tx=optax.adam(config.critic_lr),
-        )
-        actor_train_state = TrainState.create(
-            apply_fn=actor_model.apply,
-            params=actor_params,
-            tx=optax.adam(config.actor_lr),
-        )
-
-        return TD3BCTrainState(
-            critic=critic_train_state,
-            actor=actor_train_state,
-            critic_params_target=critic_params_target,
-            actor_params_target=actor_params_target,
-            update_idx=0,
-        )
-
-    def make_update_steps_fn(
-        self,
-        buffer: ReplayBuffer,
-        num_existing_samples: int,
-        update_steps: int,
-        max_action: float,
-        action_dim: int,
-        config: TD3BCConfig,
-    ) -> Tuple[dict, TD3BCTrainState]:
-        def update_steps_fn(
-            offline_train_state: TD3BCTrainState,
-            rng: jax.random.PRNGKey,
-        ):
-            def update_step_fn(
-                offline_train_state: TD3BCTrainState,
-                rng: jax.random.PRNGKey,
-            ):
-                train_state_critic = offline_train_state.critic
-                train_state_actor = offline_train_state.actor
-                critic_params_target = offline_train_state.critic_params_target
-                actor_params_target = offline_train_state.actor_params_target
-
-                rng, subkey = jax.random.split(rng)
-                obs, action, reward, next_obs, done = sample_batch(
-                    buffer, num_existing_samples, config, subkey
-                )
-                rng, subkey = jax.random.split(rng)
-                critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
-                critic_loss, critic_grads = critic_grad_fn(
-                    train_state_critic.params,
-                    critic_params_target,
-                    actor_params_target,
-                    train_state_critic.apply_fn,
-                    train_state_actor.apply_fn,
-                    obs,
-                    action,
-                    reward,
-                    done,
-                    next_obs,
-                    config.gamma,
-                    config.td3_policy_noise_std,
-                    config.td3_policy_noise_std,
-                    max_action,
-                    subkey,
-                )
-                train_state_critic = train_state_critic.apply_gradients(
-                    grads=critic_grads
-                )
-                actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
-                actor_loss, actor_grads = actor_grad_fn(
-                    train_state_actor.params,
-                    train_state_critic.params,
-                    train_state_actor.apply_fn,
-                    train_state_critic.apply_fn,
-                    obs,
-                    action,
-                    config.td3_alpha,
-                )
-                new_train_state_actor = train_state_actor.apply_gradients(
-                    grads=actor_grads
-                )
-                train_state_actor = jax.lax.cond(
-                    offline_train_state.update_idx % config.policy_freq == 0,
-                    lambda: new_train_state_actor,
-                    lambda: train_state_actor,
-                )
-                # update target network
-                critic_params_target = jax.tree_map(
-                    lambda target, live: config.polyak * target
-                    + (1.0 - config.polyak) * live,
-                    critic_params_target,
-                    train_state_critic.params,
-                )
-                actor_params_target = jax.tree_map(
-                    lambda target, live: config.polyak * target
-                    + (1.0 - config.polyak) * live,
-                    actor_params_target,
-                    train_state_actor.params,
-                )
-                offline_train_state = TD3BCTrainState(
-                    critic=train_state_critic,
-                    actor=train_state_actor,
-                    critic_params_target=critic_params_target,
-                    actor_params_target=actor_params_target,
-                    update_idx=offline_train_state.update_idx + 1,
-                )
-                return offline_train_state, None
-
-            rng_keys = jax.random.split(rng, update_steps)
-            offline_train_state, _ = jax.lax.scan(
-                update_step_fn, offline_train_state, rng_keys
-            )
-            return offline_train_state
-
-        return update_steps_fn
-
-    @partial(jax.jit, static_argnames=("self", "config", "exploration_noise"))
-    def get_action(
-        self,
-        actor_train_state: TrainState,
-        obs: jnp.ndarray,
-        rng: jax.random.PRNGKey,
-        config: TD3BCConfig,
-        exploration_noise: bool = True,
-    ) -> jnp.ndarray:
-        action = actor_train_state.apply_fn(actor_train_state.params, obs, rng=None)
-
-        if exploration_noise:
-            warnings.warn("TD3BC with exploration noise is probably not useful.")
-            noise = (
-                config.online.exploration_std
-                * self.action_space.high
-                * jax.random.normal(rng, action.shape)
-            )
-            action = action + noise.clip(
-                -self.config.online.exploration_clip,
-                self.config.online.exploration_clip,
-            )
-
-        action = action.clip(self.action_space.low, self.action_space.high)
-        return action
-
-
-@partial(jax.jit, static_argnames=("config"))
-def sample_batch(buffer, num_existing_samples, config, rng):
-    idxes = jax.random.randint(rng, (config.batch_size,), 0, num_existing_samples)
-    obs = buffer.states[idxes]
-    action = buffer.actions[idxes]
-    reward = buffer.rewards[idxes]
-    next_obs = buffer.next_states[idxes]
-    done = buffer.dones[idxes]
-    return obs, action, reward, next_obs, done
-
+    critic_train_state = TrainState.create(
+        apply_fn=critic_model.apply,
+        params=critic_params,
+        tx=optax.adam(config.critic_lr),
+    )
+    actor_train_state = TrainState.create(
+        apply_fn=actor_model.apply,
+        params=actor_params,
+        tx=optax.adam(config.actor_lr),
+    )
+    return TD3BCTrainState(
+        critic=critic_train_state,
+        actor=actor_train_state,
+        critic_params_target=critic_params_target,
+        actor_params_target=actor_params_target,
+        update_idx=0,
+    )
 
 def get_actor_loss(
     actor_params: flax.core.frozen_dict.FrozenDict,
@@ -506,60 +274,147 @@ def get_critic_loss(
     )
 
 
+def make_update_steps_fn(
+    buffer: ReplayBuffer,
+    num_existing_samples: int,
+    update_steps: int,
+    max_action: float,
+    action_dim: int,
+    config: TD3BCConfig,
+) -> Tuple[dict, TD3BCTrainState]:
+    def update_steps_fn(
+        offline_train_state: TD3BCTrainState,
+        rng: jax.random.PRNGKey,
+    ):
+        def update_step_fn(
+            offline_train_state: TD3BCTrainState,
+            rng: jax.random.PRNGKey,
+        ):
+            train_state_critic = offline_train_state.critic
+            train_state_actor = offline_train_state.actor
+            critic_params_target = offline_train_state.critic_params_target
+            actor_params_target = offline_train_state.actor_params_target
+
+            rng, subkey = jax.random.split(rng)
+            obs, action, reward, next_obs, done = sample_batch(
+                buffer, num_existing_samples, config, subkey
+            )
+            rng, subkey = jax.random.split(rng)
+            critic_grad_fn = jax.value_and_grad(get_critic_loss, has_aux=True)
+            critic_loss, critic_grads = critic_grad_fn(
+                train_state_critic.params,
+                critic_params_target,
+                actor_params_target,
+                train_state_critic.apply_fn,
+                train_state_actor.apply_fn,
+                obs,
+                action,
+                reward,
+                done,
+                next_obs,
+                config.gamma,
+                config.td3_policy_noise_std,
+                config.td3_policy_noise_std,
+                max_action,
+                subkey,
+            )
+            train_state_critic = train_state_critic.apply_gradients(grads=critic_grads)
+            actor_grad_fn = jax.value_and_grad(get_actor_loss, has_aux=True)
+            actor_loss, actor_grads = actor_grad_fn(
+                train_state_actor.params,
+                train_state_critic.params,
+                train_state_actor.apply_fn,
+                train_state_critic.apply_fn,
+                obs,
+                action,
+                config.td3_alpha,
+            )
+            new_train_state_actor = train_state_actor.apply_gradients(grads=actor_grads)
+            train_state_actor = jax.lax.cond(
+                offline_train_state.update_idx % config.policy_freq == 0,
+                lambda: new_train_state_actor,
+                lambda: train_state_actor,
+            )
+            # update target network
+            critic_params_target = jax.tree_map(
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
+                critic_params_target,
+                train_state_critic.params,
+            )
+            actor_params_target = jax.tree_map(
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
+                actor_params_target,
+                train_state_actor.params,
+            )
+            offline_train_state = TD3BCTrainState(
+                critic=train_state_critic,
+                actor=train_state_actor,
+                critic_params_target=critic_params_target,
+                actor_params_target=actor_params_target,
+                update_idx=offline_train_state.update_idx + 1,
+            )
+            return offline_train_state, None
+
+        rng_keys = jax.random.split(rng, update_steps)
+        offline_train_state, _ = jax.lax.scan(
+            update_step_fn, offline_train_state, rng_keys
+        )
+        return offline_train_state
+
+    return update_steps_fn
+
+
+@partial(jax.jit)
+def get_action(
+    actor_train_state: TrainState,
+    obs: jnp.ndarray,
+) -> jnp.ndarray:
+    action = actor_train_state.apply_fn(actor_train_state.params, obs, rng=None)
+    action = action.clip(action_space.low, action_space.high)
+    return action
+
+
+@partial(jax.jit, static_argnames=("config"))
+def sample_batch(buffer, num_existing_samples, config, rng):
+    idxes = jax.random.randint(rng, (config.batch_size,), 0, num_existing_samples)
+    obs = buffer.states[idxes]
+    action = buffer.actions[idxes]
+    reward = buffer.rewards[idxes]
+    next_obs = buffer.next_states[idxes]
+    done = buffer.dones[idxes]
+    return obs, action, reward, next_obs, done
+
+
 def eval_d4rl(
     subkey: jax.random.PRNGKey,
-    actor_trainer: RLTrainer,
     actor_trainstate: TrainState,
     env: gym.Env,
-    n_episodes: int,
     obs_mean,
     obs_std,
-    config: TD3BCConfig,
-    vae=None,
 ) -> float:
     episode_rews = []
-    for _ in range(n_episodes):
+    for _ in range(config.num_test_rollouts):
         obs = env.reset()
         done = False
         episode_rew = 0.0
-        i = 0
         while not done:
-            rng, subkey = jax.random.split(subkey)
-            obs = (obs - obs_mean) / obs_std
-            obs = jnp.array(obs)
-            action = actor_trainer.get_action(
+            obs = jnp.array((obs - obs_mean) / obs_std)
+            action = get_action(
                 actor_train_state=actor_trainstate,
-                obs=obs,
-                rng=subkey,
-                config=config,
-                exploration_noise=False,
+                obs=obs
             )
             action = action.reshape(-1)
-            last_obs = obs
             obs, rew, done, info = env.step(action)
             episode_rew += rew
-            i += 1
         episode_rews.append(episode_rew)
     return np.mean(episode_rews)
 
 
-def train_offline_d4rl():
-    """
-    Offline Training Loop.
-    """
-    print("loading dataset")
+if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
-    wandb.init(
-        project="train-" + "TD3-BC",
-        config=config,
-    )
-    env = gym.make(f"{config.env_name.lower()}-{config.data_quality}-v2")
-    dataset = d4rl.qlearning_dataset(env)
-    env_obs_dim = dataset["observations"].shape[-1]
-    action_space = env.action_space
-    act_dim = action_space.shape[0]
-    max_action = action_space.high
-
+    wandb.init(project="train-TD3-BC", config=config)
     buffer = ReplayBuffer(
         states=jnp.asarray(dataset["observations"]),
         actions=jnp.asarray(dataset["actions"]),
@@ -576,31 +431,18 @@ def train_offline_d4rl():
         rng_buffer, (config.buffer_size,), 0, len(buffer.states)
     )
     buffer = jax.tree_map(lambda x: x[buffer_idx], buffer)
-
     obs_mean = np.mean(buffer.states, axis=0)
     obs_std = np.std(buffer.states, axis=0)
     buffer = buffer._replace(
         states=(buffer.states - obs_mean) / obs_std,
         next_states=(buffer.next_states - obs_mean) / obs_std,
     )
-
-    offline_trainer = TD3BCTrainer(config=config, action_space=action_space)
-
-    offline_train_state = offline_trainer.get_models(
-        env_obs_dim, act_dim, max_action, config, rng
-    )
+    offline_train_state = get_models(rng)
 
     total_steps = 0
-    log_steps, log_return = [], []
     num_total_its = int(config.train_steps) // config.evaluate_every_epochs
-    t = tqdm.trange(
-        1,
-        config.train_steps,
-        desc=f"TD3-BC",
-        leave=True,
-    )
 
-    update_steps_fn = offline_trainer.make_update_steps_fn(
+    update_steps_fn = make_update_steps_fn(
         buffer,
         len(buffer.states),
         config.evaluate_every_epochs,
@@ -610,45 +452,25 @@ def train_offline_d4rl():
     )
     jit_update_steps_fn = jax.jit(update_steps_fn)
 
-    for it in range(num_total_its):
-        segment_timer.new_segment("updating")
+    for it in tqdm(range(num_total_its)):
         total_steps += 1
-        t.update(config.evaluate_every_epochs)
         rng, rng_eval, rng_update = jax.random.split(rng, 3)
         offline_train_state = jit_update_steps_fn(
             offline_train_state,
             rng_update,
         )
-        rng, rng_eval = jax.random.split(rng)
         eval_dict = {}
         eval_reward = eval_d4rl(
             rng_eval,
-            offline_trainer,
             offline_train_state.actor,
             env,
-            config.num_test_rollouts,
             obs_mean,
             obs_std,
-            config,
         )
         eval_rew_normed = env.get_normalized_score(eval_reward) * 100
         eval_dict[f"offline/eval_reward_{config.env_name}"] = eval_reward
         eval_dict[f"offline/eval_rew_normed_{config.env_name}"] = eval_rew_normed
         eval_dict[f"offline/step"] = total_steps
-        t.set_description(
-            f"TD3-BC/{config.env_name} R_te: {eval_reward:.2f}, {eval_rew_normed:.2f}"
-        )
-        t.refresh()
-
+        print(eval_dict)
         wandb.log(eval_dict)
-        log_steps.append(total_steps)
-        log_return.append(eval_dict)
     wandb.finish()
-    return (
-        log_steps,
-        log_return,
-        offline_train_state.actor.params,
-    )
-
-
-train_offline_d4rl()
