@@ -1,10 +1,12 @@
 # JAX-CORL
 This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), high-quality single-file implementation of offline RL algorithms.
 - 🌬️ Persuing **fast** training: speed up via jax functions such as `jit`, `vmap`, and `pmap`.
-- 🔪 As simple as possible: implement minimum requirements.
-- 💠 Focus on few important algorithms: we do not cover all algos. in [CORL](https://github.com/tinkoff-ai/CORL). Refer to
+- 🔪 As **simple** as possible: implement minimum requirements.
+- 💠 Focus on **a few important algorithms**: we do not cover all algos. in [CORL](https://github.com/tinkoff-ai/CORL). Refer to
 
 # Algorithms
+| Algorithm | copied single file | implementation | wandb report |
+|---|---|---|---|
 
 
 # Implementation policy
