@@ -48,7 +48,7 @@ class IQLConfig(BaseModel):
     seed: int = 42
     eval_episodes: int = 10
     log_interval: int = 1000
-    eval_interval: int = 5000
+    eval_interval: int = 100000
     batch_size: int = 256
     max_steps: int = int(1e6)
     tqdm: bool = True
@@ -652,6 +652,7 @@ def main():
 
         if i % config.eval_interval == 0:
             eval_stats = evaluate(agent, env, config.eval_episodes)
+            print(eval_stats)
 
             for k, v in eval_stats.items():
                 summary_writer.add_scalar(f'evaluation/average_{k}s', v, i)
