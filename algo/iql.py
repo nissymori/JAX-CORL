@@ -15,6 +15,7 @@ import gym
 import numpy as np
 import tqdm
 from tensorboardX import SummaryWriter
+from flax.training.train_state import TrainState
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from pydantic import BaseModel
@@ -84,63 +85,6 @@ class MLP(nn.Module):
                     x = nn.Dropout(rate=self.dropout_rate)(
                         x, deterministic=not training)
         return x
-
-
-@flax.struct.dataclass
-class Model:
-    step: int
-    apply_fn: nn.Module = flax.struct.field(pytree_node=False)
-    params: Params
-    tx: Optional[optax.GradientTransformation] = flax.struct.field(
-        pytree_node=False)
-    opt_state: Optional[optax.OptState] = None
-
-    @classmethod
-    def create(cls,
-               model_def: nn.Module,
-               inputs: Sequence[jnp.ndarray],
-               tx: Optional[optax.GradientTransformation] = None) -> 'Model':
-        params = model_def.init(*inputs)
-
-        if tx is not None:
-            opt_state = tx.init(params)
-        else:
-            opt_state = None
-
-        return cls(step=1,
-                   apply_fn=model_def,
-                   params=params,
-                   tx=tx,
-                   opt_state=opt_state)
-
-    def __call__(self, *args, **kwargs):
-        return self.apply_fn.apply(self.params, *args, **kwargs)
-
-    def apply(self, params, **kwargs):
-        return self.apply_fn.apply(params, **kwargs)
-
-    def apply_gradient(self, loss_fn) -> Tuple[Any, 'Model']:
-        grad_fn = jax.grad(loss_fn, has_aux=True)
-        grads, info = grad_fn(self.params)
-
-        updates, new_opt_state = self.tx.update(grads, self.opt_state,
-                                                self.params)
-        new_params = optax.apply_updates(self.params, updates)
-
-        return self.replace(step=self.step + 1,
-                            params=new_params,
-                            opt_state=new_opt_state), info
-
-    def save(self, save_path: str):
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        with open(save_path, 'wb') as f:
-            f.write(flax.serialization.to_bytes(self.params))
-
-    def load(self, load_path: str) -> 'Model':
-        with open(load_path, 'rb') as f:
-            params = flax.serialization.from_bytes(self.params, f.read())
-        return self.replace(params=params)
-
 
 
 LOG_STD_MIN = -10.0
@@ -231,11 +175,11 @@ class DoubleCritic(nn.Module):
 
 
 def _sample_actions(rng: PRNGKey,
-                    actor_def: nn.Module,
+                    actor_fn: nn.Module,
                     actor_params: Params,
                     observations: jnp.ndarray,
                     temperature: float) -> Tuple[PRNGKey, jnp.ndarray]:
-    dist = actor_def.apply(actor_params, observations=observations, temperature=temperature)
+    dist = actor_fn(actor_params, observations=observations, temperature=temperature)
     return rng, dist.sample(seed=rng)
 
 
@@ -247,17 +191,17 @@ def sample_actions(rng: PRNGKey,
     return _sample_actions(rng, actor_def, actor_params, observations, temperature)
 
 
-def awr_update_actor(key: PRNGKey, actor: Model, critic: Model, value: Model,
-           batch: Batch, temperature: float) -> Tuple[Model, InfoDict]:
-    v = value(batch.observations)
+def awr_update_actor(key: PRNGKey, actor: TrainState, critic: TrainState, value: TrainState,
+           batch: Batch, temperature: float) -> Tuple[TrainState, InfoDict]:
+    v = value.apply_fn(value.params, batch.observations)
 
-    q1, q2 = critic(batch.observations, batch.actions)
+    q1, q2 = critic.apply_fn(critic.params, batch.observations, batch.actions)
     q = jnp.minimum(q1, q2)
     exp_a = jnp.exp((q - v) * temperature)
     exp_a = jnp.minimum(exp_a, 100.0)
 
     def actor_loss_fn(actor_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
-        dist = actor.apply(actor_params,
+        dist = actor.apply_fn(actor_params,
                            observations=batch.observations,
                            training=True,
                            rngs={'dropout': key})
@@ -265,8 +209,9 @@ def awr_update_actor(key: PRNGKey, actor: Model, critic: Model, value: Model,
         actor_loss = -(exp_a * log_probs).mean()
 
         return actor_loss, {'actor_loss': actor_loss, 'adv': q - v}
-
-    new_actor, info = actor.apply_gradient(actor_loss_fn)
+    actor_grad_fn = jax.value_and_grad(actor_loss_fn, has_aux=True)
+    (actor_loss, info), grads = actor_grad_fn(actor.params)
+    new_actor = actor.apply_gradients(grads=grads)
 
     return new_actor, info
 
@@ -276,31 +221,33 @@ def loss(diff, expectile=0.8):
     return weight * (diff**2)
 
 
-def update_v(critic: Model, value: Model, batch: Batch,
-             expectile: float) -> Tuple[Model, InfoDict]:
+def update_v(critic: TrainState, value: TrainState, batch: Batch,
+             expectile: float) -> Tuple[TrainState, InfoDict]:
     actions = batch.actions
-    q1, q2 = critic(batch.observations, actions)
+    q1, q2 = critic.apply_fn(critic.params, batch.observations, actions)
     q = jnp.minimum(q1, q2)
 
     def value_loss_fn(value_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
-        v = value.apply(value_params, observations=batch.observations)
+        v = value.apply_fn(value_params, observations=batch.observations)
         value_loss = loss(q - v, expectile).mean()
         return value_loss, {
             'value_loss': value_loss,
             'v': v.mean(),
         }
-    new_value, info = value.apply_gradient(value_loss_fn)
+    value_grad_fn = jax.value_and_grad(value_loss_fn, has_aux=True)
+    (value_loss, info), grads = value_grad_fn(value.params)
+    new_value = value.apply_gradients(grads=grads)
     return new_value, info
 
 
-def update_q(critic: Model, target_value: Model, batch: Batch,
-             discount: float) -> Tuple[Model, InfoDict]:
-    next_v = target_value(batch.next_observations)
+def update_q(critic: TrainState, target_value: TrainState, batch: Batch,
+             discount: float) -> Tuple[TrainState, InfoDict]:
+    next_v = target_value.apply_fn(target_value.params, batch.next_observations)
 
     target_q = batch.rewards + discount * batch.masks * next_v
 
     def critic_loss_fn(critic_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
-        q1, q2 = critic.apply(critic_params, observations=batch.observations,
+        q1, q2 = critic.apply_fn(critic_params, observations=batch.observations,
                               actions=batch.actions)
         critic_loss = ((q1 - target_q)**2 + (q2 - target_q)**2).mean()
         return critic_loss, {
@@ -309,8 +256,9 @@ def update_q(critic: Model, target_value: Model, batch: Batch,
             'q2': q2.mean()
         }
 
-    new_critic, info = critic.apply_gradient(critic_loss_fn)
-
+    critic_grad_fn = jax.value_and_grad(critic_loss_fn, has_aux=True)
+    (critic_loss, info), grads = critic_grad_fn(critic.params)
+    new_critic = critic.apply_gradients(grads=grads)
     return new_critic, info
 
 
@@ -338,8 +286,7 @@ def evaluate(agent: nn.Module, env: gym.Env,
         stats['length'].append(episode_length)
     for k, v in stats.items():
         stats[k] = np.mean(v)
-    return stats
-
+    #stats["return"] = env.get_normalized_score(stats["return"]) * 100
     return stats
 
 
@@ -353,7 +300,7 @@ import numpy as np
 import optax
 
 
-def target_update(critic: Model, target_critic: Model, tau: float) -> Model:
+def target_update(critic: TrainState, target_critic: TrainState, tau: float) -> TrainState:
     new_target_params = jax.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), critic.params,
         target_critic.params)
@@ -363,10 +310,10 @@ def target_update(critic: Model, target_critic: Model, tau: float) -> Model:
 
 @jax.jit
 def _update_jit(
-    rng: PRNGKey, actor: Model, critic: Model, value: Model,
-    target_critic: Model, batch: Batch, discount: float, tau: float,
+    rng: PRNGKey, actor: TrainState, critic: TrainState, value: TrainState,
+    target_critic: TrainState, batch: Batch, discount: float, tau: float,
     expectile: float, temperature: float
-) -> Tuple[PRNGKey, Model, Model, Model, Model, Model, InfoDict]:
+) -> Tuple[PRNGKey, TrainState, TrainState, TrainState, TrainState, TrainState, InfoDict]:
 
     new_value, value_info = update_v(target_critic, value, batch, expectile)
     key, rng = jax.random.split(rng)
@@ -382,6 +329,10 @@ def _update_jit(
         **value_info,
         **actor_info
     }
+
+
+def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
+    return model_def.init(*inputs)
 
 
 class Learner(object):
@@ -411,30 +362,40 @@ class Learner(object):
                                     state_dependent_std=False,
                                     tanh_squash_distribution=False)
 
-        if opt_decay_schedule == "cosine":
-            schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
-            optimiser = optax.chain(optax.scale_by_adam(),
-                                    optax.scale_by_schedule(schedule_fn))
-        else:
-            optimiser = optax.adam(learning_rate=config.actor_lr)
+        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
+        optimiser = optax.chain(optax.scale_by_adam(),
+                                optax.scale_by_schedule(schedule_fn))
 
-        actor = Model.create(actor_def,
-                             inputs=[actor_key, observations],
-                             tx=optimiser)
+        actor_params = init_params(actor_def, [actor_key, observations])
+        actor: TrainState = TrainState.create(
+            apply_fn=actor_def.apply,
+            params=actor_params,
+            tx=optimiser,
+        )
 
         critic_def = DoubleCritic(config.hidden_dims)
-        critic = Model.create(critic_def,
-                              inputs=[critic_key, observations, actions],
-                              tx=optax.adam(learning_rate=config.critic_lr))
+        critic_params = init_params(critic_def, [critic_key, observations, actions])
+        critic: TrainState = TrainState.create(
+            apply_fn=critic_def.apply,
+            params=critic_params,
+            tx=optax.adam(learning_rate=config.critic_lr),
+        )
+
 
         value_def = ValueCritic(config.hidden_dims)
-        value = Model.create(value_def,
-                             inputs=[value_key, observations],
-                             tx=optax.adam(learning_rate=config.value_lr))
+        value_params = init_params(value_def, [value_key, observations])
+        value: TrainState = TrainState.create(
+            apply_fn=value_def.apply,
+            params=value_params,
+            tx=optax.adam(learning_rate=config.value_lr),
+        )
 
-        target_critic = Model.create(
-            critic_def, inputs=[critic_key, observations, actions])
-
+        target_critic_params = init_params(critic_def, [critic_key, observations, actions])
+        target_critic: TrainState = TrainState.create(
+            apply_fn=critic_def.apply,
+            params=target_critic_params,
+            tx=optax.adam(learning_rate=config.value_lr),
+        )
         self.actor = actor
         self.critic = critic
         self.value = value
