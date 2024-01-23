@@ -5,6 +5,7 @@ __pycache__/
 wandb/
 D4RL
 fig
+tmp
 
 
 # C extensions
