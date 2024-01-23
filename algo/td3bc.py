@@ -26,7 +26,7 @@ class TD3BCConfig:
     updates_per_epoch: int = 100000  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
     num_test_rollouts: int = 5
     batch_size: int = 256
-    buffer_size: int = 1000000
+    data_size: int = 1000000
     seed: int = 0
     # network config
     num_hidden_layers: int = 2
@@ -104,6 +104,10 @@ class TD3BCUpdateState(NamedTuple):
     update_idx: jnp.int32
 
 
+def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
+    return model_def.init(*inputs)
+
+
 def initialize_update_state(
     observation_dim, action_dim, max_action, rng
 ) -> TD3BCUpdateState:
@@ -111,14 +115,11 @@ def initialize_update_state(
     actor_model = TD3Actor(action_dim=action_dim, max_action=max_action)
     rng, rng1, rng2 = jax.random.split(rng, 3)
     # initialize critic and actor parameters
-    critic_params = critic_model.init(
-        rng1, state=jnp.zeros(observation_dim), action=jnp.zeros(action_dim), rng=rng1
-    )
-    critic_params_target = critic_model.init(
-        rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng=rng1
-    )
-    actor_params = actor_model.init(rng2, jnp.zeros(observation_dim), rng=rng2)
-    actor_params_target = actor_model.init(rng2, jnp.zeros(observation_dim), rng=rng2)
+    critic_params = init_params(critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1])
+    critic_params_target = init_params(critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1])
+
+    actor_params = init_params(actor_model, [rng2, jnp.zeros(observation_dim), rng2])
+    actor_params_target = init_params(actor_model, [rng2, jnp.zeros(observation_dim), rng2])
 
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
@@ -139,7 +140,7 @@ def initialize_update_state(
     )
 
 
-class ReplayBuffer(NamedTuple):
+class Transitions(NamedTuple):
     states: jnp.ndarray
     actions: jnp.ndarray
     next_states: jnp.ndarray
@@ -147,35 +148,35 @@ class ReplayBuffer(NamedTuple):
     dones: jnp.ndarray
 
 
-def initilize_buffer(
+def initilize_data(
     dataset: dict, rng: jax.random.PRNGKey
-) -> Tuple[ReplayBuffer, np.ndarray, np.ndarray]:
+) -> Tuple[Transitions, np.ndarray, np.ndarray]:
     rng, subkey = jax.random.split(rng)
-    buffer = ReplayBuffer(
+    data = Transitions(
         states=jnp.asarray(dataset["observations"]),
         actions=jnp.asarray(dataset["actions"]),
         next_states=jnp.asarray(dataset["next_observations"]),
         rewards=jnp.asarray(dataset["rewards"]),
         dones=jnp.asarray(dataset["terminals"]),
     )
-    # shuffle buffer and select the first buffer_size samples
+    # shuffle data and select the first data_size samples
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
-    perm = jax.random.permutation(rng_permute, len(buffer.states))
-    buffer = jax.tree_map(lambda x: x[perm], buffer)
-    assert len(buffer.states) >= config.buffer_size
-    buffer = jax.tree_map(lambda x: x[: config.buffer_size], buffer)
+    perm = jax.random.permutation(rng_permute, len(data.states))
+    data = jax.tree_map(lambda x: x[perm], data)
+    assert len(data.states) >= config.data_size
+    data = jax.tree_map(lambda x: x[: config.data_size], data)
     # normalize states and next_states
-    obs_mean = jnp.mean(buffer.states, axis=0)
-    obs_std = jnp.std(buffer.states, axis=0)
-    buffer = buffer._replace(
-        states=(buffer.states - obs_mean) / obs_std,
-        next_states=(buffer.next_states - obs_mean) / obs_std,
+    obs_mean = jnp.mean(data.states, axis=0)
+    obs_std = jnp.std(data.states, axis=0)
+    data = data._replace(
+        states=(data.states - obs_mean) / obs_std,
+        next_states=(data.next_states - obs_mean) / obs_std,
     )
-    return buffer, obs_mean, obs_std
+    return data, obs_mean, obs_std
 
 
 def update_actor(
-    update_state: TD3BCUpdateState, batch: ReplayBuffer, rng: jax.random.PRNGKey
+    update_state: TD3BCUpdateState, batch: Transitions, rng: jax.random.PRNGKey
 ) -> TD3BCUpdateState:
     """
     Update actor using the following loss:
@@ -207,7 +208,7 @@ def update_actor(
 
 def update_critic(
     update_state: TD3BCUpdateState,
-    batch: ReplayBuffer,
+    batch: Transitions,
     max_action,
     rng: jax.random.PRNGKey,
 ) -> TD3BCUpdateState:
@@ -257,7 +258,7 @@ def update_critic(
 
 
 def make_update_steps_fn(
-    batches: ReplayBuffer,
+    data: Transitions,
     max_action: float,
 ) -> Callable:
     def update_steps_fn(
@@ -271,9 +272,9 @@ def make_update_steps_fn(
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             # sample batch
             batch_idx = jax.random.randint(
-                batch_rng, (config.batch_size,), 0, len(batches.states)
+                batch_rng, (config.batch_size,), 0, len(data.states)
             )
-            batch = jax.tree_map(lambda x: x[batch_idx], batches)
+            batch: Transitions = jax.tree_map(lambda x: x[batch_idx], data)
             # update critic
             update_state = update_critic(update_state, batch, max_action, critic_rng)
             # update actor if policy_freq is met
@@ -324,7 +325,7 @@ def get_action(
     return action
 
 
-def eval_d4rl(
+def evaluate(
     subkey: jax.random.PRNGKey,
     actor: TrainState,
     env: gym.Env,
@@ -362,35 +363,35 @@ if __name__ == "__main__":
     max_action = env.action_space.high
 
     rng = jax.random.PRNGKey(config.seed)
-    rng, buffer_rng, model_rng = jax.random.split(rng, 3)
-    # initialize buffer and update state
-    buffer, obs_mean, obs_std = initilize_buffer(dataset, buffer_rng)
+    rng, data_rng, model_rng = jax.random.split(rng, 3)
+    # initialize data and update state
+    data, obs_mean, obs_std = initilize_data(dataset, data_rng)
     update_state = initialize_update_state(
         observation_dim, action_dim, max_action, model_rng
     )
     # initialize update steps function
-    update_steps_fn = make_update_steps_fn(buffer, max_action)
+    update_steps_fn = make_update_steps_fn(data, max_action)
     jit_update_steps_fn = jax.jit(update_steps_fn)
 
     wandb.init(project="train-TD3-BC", config=config)
-    total_steps = 0
-    num_total_its = int(config.total_updates) // config.updates_per_epoch
+    steps = 0
+    epochs = int(config.total_updates) // config.updates_per_epoch
     start_time = time.time()
-    for it in tqdm(range(num_total_its)):
-        total_steps += 1
+    for _ in tqdm(range(epochs)):
+        steps += 1
         rng, batch_rng, update_rng, eval_rng = jax.random.split(rng, 4)
         # update parameters
         update_state = jit_update_steps_fn(update_state, update_rng)
         eval_dict = {}
-        eval_rew_normed = eval_d4rl(
+        normalized_score = evaluate(
             eval_rng,
             update_state.actor,
             env,
             obs_mean,
             obs_std,
         )  # evaluate actor
-        eval_dict[f"eval_rew_normed_{config.env_name}"] = eval_rew_normed
-        eval_dict[f"step"] = total_steps
+        eval_dict[f"normalized_score_{config.env_name}"] = normalized_score
+        eval_dict[f"step"] = steps
         print(eval_dict)
         wandb.log(eval_dict)
     print(f"training time: {time.time() - start_time}")
