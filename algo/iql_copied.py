@@ -338,7 +338,7 @@ def evaluate(agent: nn.Module, env: gym.Env,
         stats['length'].append(episode_length)
     for k, v in stats.items():
         stats[k] = np.mean(v)
-    stats["return"] = env.get_normalized_score(stats["return"]) * 100
+    #stats["return"] = env.get_normalized_score(stats["return"]) * 100
     return stats
 
 
