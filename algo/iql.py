@@ -20,6 +20,7 @@ from tqdm import tqdm
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from functools import partial
+from typing import NamedTuple
 
 
 tfd = tfp.distributions
@@ -216,20 +217,19 @@ def awr_update_actor(key: PRNGKey, actor: TrainState, critic: TrainState, value:
     return new_actor, info
 
 
-def loss(diff, expectile=0.8):
+def loss(diff, expectile):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
 
-def update_v(critic: TrainState, value: TrainState, batch: Batch,
-             expectile: float) -> Tuple[TrainState, InfoDict]:
+def update_v(critic: TrainState, value: TrainState, batch: Batch) -> Tuple[TrainState, InfoDict]:
     actions = batch.actions
     q1, q2 = critic.apply_fn(critic.params, batch.observations, actions)
     q = jnp.minimum(q1, q2)
 
     def value_loss_fn(value_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
         v = value.apply_fn(value_params, observations=batch.observations)
-        value_loss = loss(q - v, expectile).mean()
+        value_loss = loss(q - v, config.expectile).mean()
         return value_loss, {
             'value_loss': value_loss,
             'v': v.mean(),
@@ -240,11 +240,9 @@ def update_v(critic: TrainState, value: TrainState, batch: Batch,
     return new_value, info
 
 
-def update_q(critic: TrainState, target_value: TrainState, batch: Batch,
-             discount: float) -> Tuple[TrainState, InfoDict]:
+def update_q(critic: TrainState, target_value: TrainState, batch: Batch) -> Tuple[TrainState, InfoDict]:
     next_v = target_value.apply_fn(target_value.params, batch.next_observations)
-
-    target_q = batch.rewards + discount * batch.masks * next_v
+    target_q = batch.rewards + config.discount * batch.masks * next_v
 
     def critic_loss_fn(critic_params: Params) -> Tuple[jnp.ndarray, InfoDict]:
         q1, q2 = critic.apply_fn(critic_params, observations=batch.observations,
@@ -299,10 +297,15 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+class IQLUpdateState(NamedTuple):
+    actor: TrainState
+    critic: TrainState
+    value: TrainState
+    target_critic: TrainState
 
-def target_update(critic: TrainState, target_critic: TrainState, tau: float) -> TrainState:
+def target_update(critic: TrainState, target_critic: TrainState) -> TrainState:
     new_target_params = jax.tree_map(
-        lambda p, tp: p * tau + tp * (1 - tau), critic.params,
+        lambda p, tp: p * config.tau + tp * (1 - config.tau), critic.params,
         target_critic.params)
 
     return target_critic.replace(params=new_target_params)
@@ -310,21 +313,23 @@ def target_update(critic: TrainState, target_critic: TrainState, tau: float) -> 
 
 @jax.jit
 def _update_jit(
-    rng: PRNGKey, actor: TrainState, critic: TrainState, value: TrainState,
-    target_critic: TrainState, batch: Batch, discount: float, tau: float,
-    expectile: float, temperature: float
-) -> Tuple[PRNGKey, TrainState, TrainState, TrainState, TrainState, TrainState, InfoDict]:
+    rng: PRNGKey, update_state: IQLUpdateState, batch: Batch
+) -> Tuple[IQLUpdateState, InfoDict]:
 
-    new_value, value_info = update_v(target_critic, value, batch, expectile)
-    key, rng = jax.random.split(rng)
-    new_actor, actor_info = awr_update_actor(key, actor, target_critic,
-                                             new_value, batch, temperature)
+    new_value, value_info = update_v(update_state.target_critic, update_state.value, batch)
+    new_actor, actor_info = awr_update_actor(rng, update_state.actor, update_state.target_critic,
+                                             new_value, batch, config.temperature)
 
-    new_critic, critic_info = update_q(critic, new_value, batch, discount)
+    new_critic, critic_info = update_q(update_state.critic, new_value, batch)
 
-    new_target_critic = target_update(new_critic, target_critic, tau)
+    new_target_critic = target_update(new_critic, update_state.target_critic)
 
-    return rng, new_actor, new_critic, new_value, new_target_critic, {
+    return IQLUpdateState(
+        actor=new_actor,
+        critic=new_critic,
+        value=new_value,
+        target_critic=new_target_critic,
+        ), {
         **critic_info,
         **value_info,
         **actor_info
@@ -344,12 +349,6 @@ class Learner(object):
         """
         An implementation of the version of Soft-Actor-Critic described in https://arxiv.org/abs/1801.01290
         """
-
-        self.expectile = config.expectile
-        self.tau = config.tau
-        self.discount = config.discount
-        self.temperature = config.temperature
-
         rng = jax.random.PRNGKey(seed)
         rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
 
@@ -396,34 +395,33 @@ class Learner(object):
             params=target_critic_params,
             tx=optax.adam(learning_rate=config.value_lr),
         )
-        self.actor = actor
-        self.critic = critic
-        self.value = value
-        self.target_critic = target_critic
+        self.update_state = IQLUpdateState(
+            actor=actor,
+            critic=critic,
+            value=value,
+            target_critic=target_critic,
+        )
         self.rng = rng
 
     @partial(jax.jit, static_argnums=(0,))
     def sample_actions(self,
                        observations: np.ndarray,
                        temperature) -> jnp.ndarray:
-        rng, actions = sample_actions(self.rng, self.actor.apply_fn,
-                                             self.actor.params, observations,
+        rng, actions = sample_actions(self.rng, self.update_state.actor.apply_fn,
+                                             self.update_state.actor.params, observations,
                                              temperature)
         self.rng = rng
         actions = jnp.asarray(actions)
         return jnp.clip(actions, -1, 1)
 
     def update(self, batch: Batch) -> InfoDict:
-        new_rng, new_actor, new_critic, new_value, new_target_critic, info = _update_jit(
-            self.rng, self.actor, self.critic, self.value, self.target_critic,
-            batch, self.discount, self.tau, self.expectile, self.temperature)
+        rng, subrng = jax.random.split(self.rng)
+        update_state, info = _update_jit(
+            subrng, self.update_state,
+            batch)
 
-        self.rng = new_rng
-        self.actor = new_actor
-        self.critic = new_critic
-        self.value = new_value
-        self.target_critic = new_target_critic
-
+        self.rng = rng
+        self.update_state = update_state
         return info
 
 
