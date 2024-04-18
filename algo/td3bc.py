@@ -151,6 +151,10 @@ class Transitions(NamedTuple):
 def initialize_data(
     dataset: dict, rng: jax.random.PRNGKey
 ) -> Tuple[Transitions, np.ndarray, np.ndarray]:
+"""
+This part is D4RL specific. Please change to your own dataset.
+As long as your can convert your dataset in the form of Transitions, it should work.
+"""
     rng, subkey = jax.random.split(rng)
     data = Transitions(
         states=jnp.asarray(dataset["observations"]),
