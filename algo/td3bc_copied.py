@@ -650,9 +650,9 @@ def train_offline_d4rl():
         ) = offline_trainer.sample_buff_and_update_n_times(
             offline_train_state,
             buffer=buffer,
-            num_existing_samples=buffer["_p"]
-            if isinstance(buffer["_p"], int)
-            else buffer["_p"].item(),
+            num_existing_samples=(
+                buffer["_p"] if isinstance(buffer["_p"], int) else buffer["_p"].item()
+            ),
             rng=rng_update,
             action_dim=act_dim,
             max_action=max_action,
