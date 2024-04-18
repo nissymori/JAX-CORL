@@ -105,6 +105,7 @@ class TD3BCUpdateState(NamedTuple):
     critic_params_target: flax.core.FrozenDict
     actor_params_target: flax.core.FrozenDict
     update_idx: jnp.int32
+    rng: jax.random.PRNGKey
 
 
 def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
@@ -146,6 +147,7 @@ def initialize_update_state(
         critic_params_target=critic_params_target,
         actor_params_target=actor_params_target,
         update_idx=0,
+        rng=rng,
     )
 
 
@@ -272,62 +274,50 @@ def update_critic(
     return update_state._replace(critic=critic)
 
 
-def make_update_steps_fn(
-    data: Transitions,
-    max_action: float,
-) -> Callable:
-    def update_steps_fn(
+
+def update_steps_fn(
+    update_state: TD3BCUpdateState,
+    batches: Transitions,
+    max_action: jnp.ndarray,
+):
+    def update_step_fn(
         update_state: TD3BCUpdateState,
-        rng: jax.random.PRNGKey,
+        batch: Transitions,
     ):
-        def update_step_fn(
-            update_state: TD3BCUpdateState,
-            rng: jax.random.PRNGKey,
-        ):
-            rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
-            # sample batch
-            batch_idx = jax.random.randint(
-                batch_rng, (config.batch_size,), 0, len(data.states)
-            )
-            batch: Transitions = jax.tree_map(
-                lambda x: x[batch_idx], data
-            )  # (batch_size, *dim)
-            # update critic
-            update_state = update_critic(update_state, batch, max_action, critic_rng)
-            # update actor if policy_freq is met
-            new_update_state = update_actor(update_state, batch, actor_rng)
-            update_state = jax.lax.cond(
-                update_state.update_idx % config.policy_freq == 0,
-                lambda: new_update_state,
-                lambda: update_state,
-            )
-            # update target parameters
-            critic_params_target = jax.tree_map(
-                lambda target, live: config.polyak * target
-                + (1.0 - config.polyak) * live,
-                update_state.critic_params_target,
-                update_state.critic.params,
-            )
-            actor_params_target = jax.tree_map(
-                lambda target, live: config.polyak * target
-                + (1.0 - config.polyak) * live,
-                update_state.actor_params_target,
-                update_state.actor.params,
-            )
-            return (
-                update_state._replace(
-                    critic_params_target=critic_params_target,
-                    actor_params_target=actor_params_target,
-                    update_idx=update_state.update_idx + 1,
-                ),
-                None,
-            )
-
-        rngs = jax.random.split(rng, config.updates_per_epoch)
-        update_state, _ = jax.lax.scan(update_step_fn, update_state, rngs, unroll=2)
-        return update_state
-
-    return update_steps_fn
+        rng, critic_rng, actor_rng = jax.random.split(update_state.rng, 3)
+        # update critic
+        update_state = update_critic(update_state, batch, max_action, critic_rng)
+        # update actor if policy_freq is met
+        new_update_state = update_actor(update_state, batch, actor_rng)
+        update_state = jax.lax.cond(
+            update_state.update_idx % config.policy_freq == 0,
+            lambda: new_update_state,
+            lambda: update_state,
+        )
+        # update target parameters
+        critic_params_target = jax.tree_map(
+            lambda target, live: config.polyak * target
+            + (1.0 - config.polyak) * live,
+            update_state.critic_params_target,
+            update_state.critic.params,
+        )
+        actor_params_target = jax.tree_map(
+            lambda target, live: config.polyak * target
+            + (1.0 - config.polyak) * live,
+            update_state.actor_params_target,
+            update_state.actor.params,
+        )
+        return (
+            update_state._replace(
+                critic_params_target=critic_params_target,
+                actor_params_target=actor_params_target,
+                update_idx=update_state.update_idx + 1,
+                rng=rng,
+            ),
+            None,
+        )
+    update_state, _ = jax.lax.scan(update_step_fn, update_state, batches, unroll=2)
+    return update_state
 
 
 @partial(jax.jit)
@@ -387,8 +377,7 @@ if __name__ == "__main__":
         observation_dim, action_dim, max_action, model_rng
     )
     # initialize update steps function
-    update_steps_fn = make_update_steps_fn(data, max_action)
-    jit_update_steps_fn = jax.jit(update_steps_fn)
+    jit_update_steps_fn = partial(jax.jit(update_steps_fn), max_action=max_action)
 
     wandb.init(project="train-TD3-BC", config=config)
     steps = 0
@@ -397,8 +386,15 @@ if __name__ == "__main__":
     for _ in tqdm(range(epochs)):
         steps += 1
         rng, batch_rng, update_rng, eval_rng = jax.random.split(rng, 4)
+        # sample batch
+        batch_idx = jax.random.randint(
+            batch_rng, (config.updates_per_epoch * config.batch_size,), 0, len(data.states)
+        )
+        batches: Transitions = jax.tree_map(
+            lambda x: x[batch_idx].reshape(config.updates_per_epoch, config.batch_size, -1), data
+        )  # (update_per_epoch, batch_size, *dim)
         # update parameters
-        update_state = jit_update_steps_fn(update_state, update_rng)
+        update_state = jit_update_steps_fn(update_state, batches)
     eval_dict = {}
     normalized_score = evaluate(
         eval_rng,
