@@ -18,12 +18,14 @@ from pydantic import BaseModel
 from tqdm import tqdm
 
 
-class TD3BCConfig:
+class TD3BCConfig(BaseModel):
     # general config
     env_name: str = "hopper"
     data_quality: str = "medium-expert"
     total_updates: int = 1000000
-    updates_per_epoch: int = 100000  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
+    updates_per_epoch: int = (
+        16  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
+    )
     num_test_rollouts: int = 5
     batch_size: int = 256
     data_size: int = 1000000
@@ -42,7 +44,8 @@ class TD3BCConfig:
     gamma: float = 0.99  # discount factor
 
 
-config = TD3BCConfig(**OmegaConf.to_object(OmegaConf.from_cli()))
+conf_dict = OmegaConf.from_cli()
+config = TD3BCConfig(**conf_dict)
 
 
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
@@ -115,11 +118,17 @@ def initialize_update_state(
     actor_model = TD3Actor(action_dim=action_dim, max_action=max_action)
     rng, rng1, rng2 = jax.random.split(rng, 3)
     # initialize critic and actor parameters
-    critic_params = init_params(critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1])
-    critic_params_target = init_params(critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1])
+    critic_params = init_params(
+        critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1]
+    )
+    critic_params_target = init_params(
+        critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1]
+    )
 
     actor_params = init_params(actor_model, [rng2, jnp.zeros(observation_dim), rng2])
-    actor_params_target = init_params(actor_model, [rng2, jnp.zeros(observation_dim), rng2])
+    actor_params_target = init_params(
+        actor_model, [rng2, jnp.zeros(observation_dim), rng2]
+    )
 
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
@@ -151,10 +160,10 @@ class Transitions(NamedTuple):
 def initialize_data(
     dataset: dict, rng: jax.random.PRNGKey
 ) -> Tuple[Transitions, np.ndarray, np.ndarray]:
-"""
-This part is D4RL specific. Please change to your own dataset.
-As long as your can convert your dataset in the form of Transitions, it should work.
-"""
+    """
+    This part is D4RL specific. Please change to your own dataset.
+    As long as your can convert your dataset in the form of Transitions, it should work.
+    """
     rng, subkey = jax.random.split(rng)
     data = Transitions(
         states=jnp.asarray(dataset["observations"]),
@@ -248,7 +257,9 @@ def update_critic(
         )  # twin Q networks
         target = batch.rewards[..., None] + config.gamma * jnp.minimum(
             q_next_1, q_next_2
-        ) * (1 - batch.dones[..., None])  # take the min of the two Q networks
+        ) * (
+            1 - batch.dones[..., None]
+        )  # take the min of the two Q networks
         target = jax.lax.stop_gradient(target)
         value_loss_1 = jnp.square(q_pred_1 - target)
         value_loss_2 = jnp.square(q_pred_2 - target)
@@ -278,7 +289,7 @@ def make_update_steps_fn(
             batch_idx = jax.random.randint(
                 batch_rng, (config.batch_size,), 0, len(data.states)
             )
-            batch: Transitions = jax.tree_map(lambda x: x[batch_idx], data)
+            batch: Transitions = jax.tree_map(lambda x: x[batch_idx], data)  # (batch_size, *dim)
             # update critic
             update_state = update_critic(update_state, batch, max_action, critic_rng)
             # update actor if policy_freq is met
@@ -379,7 +390,7 @@ if __name__ == "__main__":
 
     wandb.init(project="train-TD3-BC", config=config)
     steps = 0
-    epochs = int(config.total_updates) // config.updates_per_epoch
+    epochs = int(config.total_updates // config.updates_per_epoch)
     start_time = time.time()
     for _ in tqdm(range(epochs)):
         steps += 1
@@ -398,5 +409,5 @@ if __name__ == "__main__":
         eval_dict[f"step"] = steps
         print(eval_dict)
         wandb.log(eval_dict)
-    print(f"training time: {time.time() - start_time}")
+    print(f"training time: {end_time - start_time}")
     wandb.finish()
