@@ -289,7 +289,9 @@ def make_update_steps_fn(
             batch_idx = jax.random.randint(
                 batch_rng, (config.batch_size,), 0, len(data.states)
             )
-            batch: Transitions = jax.tree_map(lambda x: x[batch_idx], data)  # (batch_size, *dim)
+            batch: Transitions = jax.tree_map(
+                lambda x: x[batch_idx], data
+            )  # (batch_size, *dim)
             # update critic
             update_state = update_critic(update_state, batch, max_action, critic_rng)
             # update actor if policy_freq is met
