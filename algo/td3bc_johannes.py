@@ -411,7 +411,7 @@ if __name__ == "__main__":
     end_time = time.time()
     wandb.log(
         {
-            "type": "n_step_forloop",
+            "type": "forjit",
             "time": end_time - start_time,
             "time/step": (end_time - start_time) / steps,
         }
