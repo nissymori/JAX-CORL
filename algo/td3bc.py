@@ -324,7 +324,7 @@ def make_update_steps_fn(
             )
 
         rngs = jax.random.split(rng, config.updates_per_epoch)
-        update_state, _ = jax.lax.scan(update_step_fn, update_state, rngs)
+        update_state, _ = jax.lax.scan(update_step_fn, update_state, rngs, unroll=2)
         return update_state
 
     return update_steps_fn
@@ -411,5 +411,5 @@ if __name__ == "__main__":
         eval_dict[f"step"] = steps
         print(eval_dict)
         wandb.log(eval_dict)
-    print(f"training time: {end_time - start_time}")
+    print(f"training time: {time.time() - start_time}")
     wandb.finish()
