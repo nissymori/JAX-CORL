@@ -411,5 +411,5 @@ if __name__ == "__main__":
         eval_dict[f"step"] = steps
         print(eval_dict)
         wandb.log(eval_dict)
-    print(f"training time: {end_time - start_time}")
+    print(f"training time: {time.time() - start_time}")
     wandb.finish()
