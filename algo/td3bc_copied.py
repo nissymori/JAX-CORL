@@ -114,7 +114,7 @@ class BufferManager:
     ):
         pass
 
-    @partial(jax.jit, static_argnums=(0, 2))
+    #@partial(jax.jit, static_argnums=(0, 2))
     def get(self, buffer, batch_size: int, rng):
         idxes = jax.random.randint(rng, (batch_size,), 0, buffer["_p"])
         batch = (
@@ -658,6 +658,7 @@ def train_offline_d4rl():
             max_action=max_action,
             config=config,
         )
+        """
         if it % 200 == 0:
             metric_dict["offline/step"] = total_steps
             wandb.log(metric_dict)
@@ -690,6 +691,7 @@ def train_offline_d4rl():
             wandb.log(eval_dict)
             log_steps.append(total_steps)
             log_return.append(eval_dict)
+            """
     print(f"Total time: {time.time() - start_time:.2f}s")
     wandb.finish()
     return (
