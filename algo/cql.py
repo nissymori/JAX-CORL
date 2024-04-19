@@ -339,51 +339,9 @@ def index_batch(batch, indices):
     return indexed
 
 
-def parition_batch_train_test(batch, train_ratio):
-    train_indices = np.random.rand(batch['observations'].shape[0]) < train_ratio
-    train_batch = index_batch(batch, train_indices)
-    test_batch = index_batch(batch, ~train_indices)
-    return train_batch, test_batch
-
-
 def subsample_batch(batch, size):
     indices = np.random.randint(batch['observations'].shape[0], size=size)
     return index_batch(batch, indices)
-
-
-def concatenate_batches(batches):
-    concatenated = {}
-    for key in batches[0].keys():
-        concatenated[key] = np.concatenate([batch[key] for batch in batches], axis=0).astype(np.float32)
-    return concatenated
-
-
-def split_batch(batch, batch_size):
-    batches = []
-    length = batch['observations'].shape[0]
-    keys = batch.keys()
-    for start in range(0, length, batch_size):
-        end = min(start + batch_size, length)
-        batches.append({key: batch[key][start:end, ...] for key in keys})
-    return batches
-
-
-def split_data_by_traj(data, max_traj_length):
-    dones = data['dones'].astype(bool)
-    start = 0
-    splits = []
-    for i, done in enumerate(dones):
-        if i - start + 1 >= max_traj_length or done:
-            splits.append(index_batch(data, slice(start, i + 1)))
-            start = i + 1
-
-    if start < len(dones):
-        splits.append(index_batch(data, slice(start, None)))
-
-    return splits
-
-
-import numpy as np
 
 
 class StepSampler(object):
