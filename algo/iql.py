@@ -297,7 +297,7 @@ def evaluate(agent: nn.Module, env: gym.Env, num_episodes: int) -> Dict[str, flo
             observation, reward, done, info = env.step(action)
             episode_return += reward
             episode_length += 1
-        stats["return"].append(episode_return)
+        stats["return"].append(env.get_normalized_score(episode_return)*100)
         stats["length"].append(episode_length)
     for k, v in stats.items():
         stats[k] = np.mean(v)
