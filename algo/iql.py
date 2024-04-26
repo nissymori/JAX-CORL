@@ -920,7 +920,7 @@ def get_normalization(dataset):
         return (max(returns) - min(returns)) / 1000
 
 def main(_):
-    wandb.init(config=FLAGS.config)
+    wandb.init(config=FLAGS.config, project='iql')
 
     if FLAGS.save_dir is not None:
         pass
