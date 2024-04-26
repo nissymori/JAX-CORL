@@ -14,6 +14,8 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |DT|   |   |   |
 
 
+# Report
+
 
 # Implementation policy
 1. Try to find working jax implementation (if not, find pytorch version).
