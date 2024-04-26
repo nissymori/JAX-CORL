@@ -207,111 +207,17 @@ class Transition(NamedTuple):
     next_observations: jnp.ndarray
 
 
-def supply_rng(f, rng=jax.random.PRNGKey(0)):
-    """
-    Wrapper that supplies a jax random key to a function (using keyword `seed`).
-    Useful for stochastic policies that require randomness.
-
-    Similar to functools.partial(f, seed=seed), but makes sure to use a different
-    key for each new call (to avoid stale rng keys).
-
-    """
-
-    def wrapped(*args, **kwargs):
-        nonlocal rng
-        rng, key = jax.random.split(rng)
-        return f(*args, seed=key, **kwargs)
-
-    return wrapped
-
-
-def flatten(d, parent_key="", sep="."):
-    """
-    Helper function that flattens a dictionary of dictionaries into a single dictionary.
-    E.g: flatten({'a': {'b': 1}}) -> {'a.b': 1}
-    """
-    items = []
-    for k, v in d.items():
-        new_key = parent_key + sep + k if parent_key else k
-        if hasattr(v, "items"):
-            items.extend(flatten(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-
-
-def add_to(dict_of_lists, single_dict):
-    for k, v in single_dict.items():
-        dict_of_lists[k].append(v)
-
-
 def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
-    """
-    Evaluates a policy in an environment by running it for some number of episodes,
-    and returns average statistics for metrics in the environment's info dict.
-
-    If you wish to log environment returns, you can use the EpisodeMonitor wrapper (see below).
-
-    Arguments:
-        policy_fn: A function that takes an observation and returns an action.
-            (if your policy needs JAX RNG keys, use supply_rng to supply a random key)
-        env: The environment to evaluate in.
-        num_episodes: The number of episodes to run for.
-    Returns:
-        A dictionary of average statistics for metrics in the environment's info dict.
-
-    """
-    stats = defaultdict(list)
+    episode_returns = []
     for _ in range(num_episodes):
+        episode_return = 0
         observation, done = env.reset(), False
         while not done:
             action = policy_fn(observation)
-            observation, _, done, info = env.step(action)
-            add_to(stats, flatten(info))
-        add_to(stats, flatten(info, parent_key="final"))
-
-    for k, v in stats.items():
-        stats[k] = np.mean(v)
-    return stats
-
-
-class EpisodeMonitor(gym.ActionWrapper):
-    """A class that computes episode returns and lengths."""
-
-    def __init__(self, env: gym.Env):
-        super().__init__(env)
-        self._reset_stats()
-        self.total_timesteps = 0
-
-    def _reset_stats(self):
-        self.reward_sum = 0.0
-        self.episode_length = 0
-        self.start_time = time.time()
-
-    def step(self, action: np.ndarray):
-        observation, reward, done, info = self.env.step(action)
-
-        self.reward_sum += reward
-        self.episode_length += 1
-        self.total_timesteps += 1
-        info["total"] = {"timesteps": self.total_timesteps}
-
-        if done:
-            info["episode"] = {}
-            info["episode"]["return"] = self.reward_sum
-            info["episode"]["length"] = self.episode_length
-            info["episode"]["duration"] = time.time() - self.start_time
-
-            if hasattr(self, "get_normalized_score"):
-                info["episode"]["normalized_return"] = (
-                    self.get_normalized_score(info["episode"]["return"]) * 100.0
-                )
-
-        return observation, reward, done, info
-
-    def reset(self) -> np.ndarray:
-        self._reset_stats()
-        return self.env.reset()
+            observation, rew, done, info = env.step(action)
+            episode_return += rew
+        episode_returns.append(episode_return)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
 def default_init(scale: Optional[float] = 1.0):
@@ -575,7 +481,6 @@ def get_default_config():
 
 def make_env(env_name: str):
     env = gym.make(env_name)
-    env = EpisodeMonitor(env)
     return env
 
 def get_dataset(env: gym.Env,
@@ -604,10 +509,8 @@ def get_dataset(env: gym.Env,
 
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string('env_name', 'walker2d-medium-expert-v2', 'Environment name.')
-
+flags.DEFINE_string('env_name', 'halfcheetah-medium-expert-v2', 'Environment name.')
 flags.DEFINE_string('save_dir', None, 'Logging dir (if not None, save params).')
-
 flags.DEFINE_integer('seed', np.random.choice(1000000), 'Random seed.')
 flags.DEFINE_integer('eval_episodes', 10,
                      'Number of episodes used for evaluation.')
@@ -665,11 +568,10 @@ def main(_):
             wandb.log(train_metrics, step=i)
 
         if i % FLAGS.eval_interval == 0:
-            policy_fn = partial(supply_rng(agent.sample_actions), temperature=0.0)
-            eval_info = evaluate(policy_fn, env, num_episodes=FLAGS.eval_episodes)
-            print(i, eval_info["episode.normalized_return"])
-
-            eval_metrics = {f'evaluation/{k}': v for k, v in eval_info.items()}
+            policy_fn = partial(agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0))
+            normalized_score = evaluate(policy_fn, env, num_episodes=FLAGS.eval_episodes)
+            print(i, normalized_score)
+            eval_metrics = {"normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
 
         if i % FLAGS.save_interval == 0 and FLAGS.save_dir is not None:
