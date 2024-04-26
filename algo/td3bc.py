@@ -299,12 +299,14 @@ def update_n_times(
             update_state = new_update_state
             # update target parameters
             critic_params_target = jax.tree_map(
-                lambda target, live: config.polyak * target + (1.0 - config.polyak) * live,
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
                 update_state.critic_params_target,
                 update_state.critic.params,
             )
             actor_params_target = jax.tree_map(
-                lambda target, live: config.polyak * target + (1.0 - config.polyak) * live,
+                lambda target, live: config.polyak * target
+                + (1.0 - config.polyak) * live,
                 update_state.actor_params_target,
                 update_state.actor.params,
             )
@@ -373,7 +375,9 @@ if __name__ == "__main__":
     )
 
     wandb.init(project="train-TD3-BC-time-measuring", config=config)
-    epochs = int(config.total_updates // config.updates_per_epoch)  # we update multiple times per epoch
+    epochs = int(
+        config.total_updates // config.updates_per_epoch
+    )  # we update multiple times per epoch
     steps = 0
     start_time = time.time()
     for _ in tqdm(range(epochs)):
@@ -391,7 +395,7 @@ if __name__ == "__main__":
         obs_mean,
         obs_std,
     )  # evaluate actor
-    
+
     eval_dict[f"normalized_score_{config.env_name}"] = normalized_score
     eval_dict[f"step"] = steps
     print(eval_dict)
