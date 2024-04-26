@@ -210,14 +210,14 @@ class Transition(NamedTuple):
 def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
     episode_returns = []
     for _ in range(num_episodes):
-        eposode_return = 0
+        episode_return = 0
         observation, done = env.reset(), False
         while not done:
             action = policy_fn(observation)
             observation, rew, done, info = env.step(action)
             episode_return += rew
         episode_returns.append(episode_return)
-    return env.get_normalized_score(np.mean(episode_returns))
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
 def default_init(scale: Optional[float] = 1.0):
@@ -481,7 +481,6 @@ def get_default_config():
 
 def make_env(env_name: str):
     env = gym.make(env_name)
-    env = EpisodeMonitor(env)
     return env
 
 def get_dataset(env: gym.Env,
