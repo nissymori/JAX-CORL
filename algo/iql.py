@@ -509,10 +509,8 @@ def get_dataset(env: gym.Env,
 
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string('env_name', 'walker2d-medium-expert-v2', 'Environment name.')
-
+flags.DEFINE_string('env_name', 'halfcheetah-medium-expert-v2', 'Environment name.')
 flags.DEFINE_string('save_dir', None, 'Logging dir (if not None, save params).')
-
 flags.DEFINE_integer('seed', np.random.choice(1000000), 'Random seed.')
 flags.DEFINE_integer('eval_episodes', 10,
                      'Number of episodes used for evaluation.')
