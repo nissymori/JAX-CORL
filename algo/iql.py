@@ -827,7 +827,7 @@ def get_normalization(dataset: Transition):
 
 def main(_):
     wandb.init(config=FLAGS.config, project='iql')
-
+    rng = jax.random.PRNGKey(FLAGS.seed)
     if FLAGS.save_dir is not None:
         pass
         # TODO save config
@@ -849,8 +849,10 @@ def main(_):
     for i in tqdm.tqdm(range(1, FLAGS.max_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
+        rng, subkey = jax.random.split(rng)
+        batch_indices = jax.random.randint(subkey, (FLAGS.batch_size,), 0, len(dataset.observations))
 
-        batch = dataset.sample(FLAGS.batch_size)  
+        batch: Transition = jax.tree_map(lambda x: x[batch_indices], dataset)
         agent, update_info = agent.update(batch)
 
         if i % FLAGS.log_interval == 0:
