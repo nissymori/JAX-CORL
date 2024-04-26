@@ -1,8 +1,24 @@
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union, NamedTuple
 import numpy as np
 import jax.numpy as jnp
+import jax
 import flax
 from functools import partial
+import wandb
+import flax.linen as nn
+import optax
+import functools
+import gym
+from collections import defaultdict
+import time
+import distrax
+import d4rl
+import os
+from absl import app, flags
+from functools import partial
+import tqdm
+from ml_collections import config_flags
+import pickle
 
 PRNGKey = Any
 Params = flax.core.FrozenDict[str, Any]
@@ -17,15 +33,6 @@ ModuleMethod = Union[
     str, Callable, None
 ]  # A method to be passed into TrainState.__call__
 
-
-# WANDB
-import wandb
-
-import flax
-import flax.linen as nn
-import jax
-import optax
-import functools
 
 nonpytree_field = functools.partial(flax.struct.field, pytree_node=False)
 
@@ -200,14 +207,6 @@ class Transition(NamedTuple):
     next_observations: jnp.ndarray
 
 
-from typing import Dict
-import jax
-import gym
-import numpy as np
-from collections import defaultdict
-import time
-
-
 def supply_rng(f, rng=jax.random.PRNGKey(0)):
     """
     Wrapper that supplies a jax random key to a function (using keyword `seed`).
@@ -276,55 +275,6 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
     return stats
 
 
-def evaluate_with_trajectories(
-    policy_fn, env: gym.Env, num_episodes: int
-) -> Dict[str, float]:
-    """
-    Same as evaluate, but also returns the trajectories of observations, actions, rewards, etc.
-
-    Arguments:
-        See evaluate.
-    Returns:
-        stats: See evaluate.
-        trajectories: A list of dictionaries (each dictionary corresponds to an episode),
-            where trajectories[i] = {
-                'observation': list_of_observations,
-                'action': list_of_actions,
-                'next_observation': list_of_next_observations,
-                'reward': list of rewards,
-                'done': list of done flags,
-                'info': list of info dicts,
-            }
-    """
-
-    trajectories = []
-    stats = defaultdict(list)
-
-    for _ in range(num_episodes):
-        trajectory = defaultdict(list)
-        observation, done = env.reset(), False
-        while not done:
-            action = policy_fn(observation)
-            next_observation, r, done, info = env.step(action)
-            transition = dict(
-                observation=observation,
-                next_observation=next_observation,
-                action=action,
-                reward=r,
-                done=done,
-                info=info,
-            )
-            add_to(trajectory, transition)
-            add_to(stats, flatten(info))
-            observation = next_observation
-        add_to(stats, flatten(info, parent_key="final"))
-        trajectories.append(trajectory)
-
-    for k, v in stats.items():
-        stats[k] = np.mean(v)
-    return stats, trajectories
-
-
 class EpisodeMonitor(gym.ActionWrapper):
     """A class that computes episode returns and lengths."""
 
@@ -364,34 +314,6 @@ class EpisodeMonitor(gym.ActionWrapper):
         return self.env.reset()
 
 
-"""Common networks used in RL.
-
-This file contains nn.Module definitions for common networks used in RL. It is divided into three sets:
-
-1) Common Networks: MLP
-2) Common RL Networks:
-    For discrete action spaces: DiscreteCritic is a Q-function
-    For continuous action spaces: Critic, ValueCritic, and Policy provide the Q-function, value function, and policy respectively.
-    For ensembling: ensemblize() provides a wrapper for creating ensembles of networks (e.g. for min-Q / double-Q)
-3) Meta Networks for vision tasks:
-    WithEncoder: Combines a fully connected network with an encoder network (encoder may come from jaxrl_m.vision)
-    ActorCritic: Same as WithEncoder, but for possibly many different networks (e.g. actor, critic, value)
-"""
-
-import flax.linen as nn
-import jax.numpy as jnp
-
-import distrax
-import flax.linen as nn
-import jax.numpy as jnp
-
-###############################
-#
-#  Common Networks
-#
-###############################
-
-
 def default_init(scale: Optional[float] = 1.0):
     return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
 
@@ -413,26 +335,6 @@ class MLP(nn.Module):
             if i + 1 < len(self.layers) or self.activate_final:
                 x = self.activations(x)
         return x
-
-
-###############################
-#
-#
-#  Common RL Networks
-#
-###############################
-
-
-class DiscreteCritic(nn.Module):
-    hidden_dims: Sequence[int]
-    n_actions: int
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-
-    @nn.compact
-    def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        return MLP((*self.hidden_dims, self.n_actions), activations=self.activations)(
-            observations
-        )
 
 
 class Critic(nn.Module):
@@ -521,101 +423,6 @@ class TransformedWithMode(distrax.Transformed):
     def mode(self) -> jnp.ndarray:
         return self.bijector.forward(self.distribution.mode())
 
-
-###############################
-#
-#
-#   Meta Networks for Encoders
-#
-###############################
-
-
-def get_latent(
-    encoder: nn.Module, observations: Union[jnp.ndarray, Dict[str, jnp.ndarray]]
-):
-    """
-
-    Get latent representation from encoder. If observations is a dict
-        a state and image component, then concatenate the latents.
-
-    """
-    if encoder is None:
-        return observations
-
-    elif isinstance(observations, dict):
-        return jnp.concatenate(
-            [encoder(observations["image"]), observations["state"]], axis=-1
-        )
-
-    else:
-        return encoder(observations)
-
-
-class WithEncoder(nn.Module):
-    encoder: nn.Module
-    network: nn.Module
-
-    def __call__(self, observations, *args, **kwargs):
-        latents = get_latent(self.encoder, observations)
-        return self.network(latents, *args, **kwargs)
-
-
-class ActorCritic(nn.Module):
-    """Combines FC networks with encoders for actor, critic, and value.
-
-    Note: You can share encoder parameters between actor and critic by passing in the same encoder definition for both.
-
-    Example:
-
-        encoder_def = ImpalaEncoder()
-        actor_def = Policy(...)
-        critic_def = Critic(...)
-        # This will share the encoder between actor and critic
-        model_def = ActorCritic(
-            encoders={'actor': encoder_def, 'critic': encoder_def},
-            networks={'actor': actor_def, 'critic': critic_def}
-        )
-        # This will have separate encoders for actor and critic
-        model_def = ActorCritic(
-            encoders={'actor': encoder_def, 'critic': copy.deepcopy(encoder_def)},
-            networks={'actor': actor_def, 'critic': critic_def}
-        )
-    """
-
-    encoders: Dict[str, nn.Module]
-    networks: Dict[str, nn.Module]
-
-    def actor(self, observations, **kwargs):
-        latents = get_latent(self.encoders["actor"], observations)
-        return self.networks["actor"](latents, **kwargs)
-
-    def critic(self, observations, actions, **kwargs):
-        latents = get_latent(self.encoders["critic"], observations)
-        return self.networks["critic"](latents, actions, **kwargs)
-
-    def value(self, observations, **kwargs):
-        latents = get_latent(self.encoders["value"], observations)
-        return self.networks["value"](latents, **kwargs)
-
-    def __call__(self, observations, actions):
-        rets = {}
-        if "actor" in self.networks:
-            rets["actor"] = self.actor(observations)
-        if "critic" in self.networks:
-            rets["critic"] = self.critic(observations, actions)
-        if "value" in self.networks:
-            rets["value"] = self.value(observations)
-        return rets
-
-
-"""Implementations of algorithms for continuous control."""
-
-import jax
-import jax.numpy as jnp
-import numpy as np
-import optax
-
-import flax
 
 def expectile_loss(diff, expectile=0.8):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
@@ -766,10 +573,6 @@ def get_default_config():
     return config
 
 
-import d4rl
-import gym
-import numpy as np
-
 def make_env(env_name: str):
     env = gym.make(env_name)
     env = EpisodeMonitor(env)
@@ -800,19 +603,6 @@ def get_dataset(env: gym.Env,
         return dataset
 
 
-import os
-from absl import app, flags
-from functools import partial
-import numpy as np
-
-import tqdm
-
-import wandb
-
-from ml_collections import config_flags
-import pickle
-
-
 FLAGS = flags.FLAGS
 flags.DEFINE_string('env_name', 'walker2d-medium-expert-v2', 'Environment name.')
 
@@ -822,7 +612,7 @@ flags.DEFINE_integer('seed', np.random.choice(1000000), 'Random seed.')
 flags.DEFINE_integer('eval_episodes', 10,
                      'Number of episodes used for evaluation.')
 flags.DEFINE_integer('log_interval', 100000, 'Logging interval.')
-flags.DEFINE_integer('eval_interval', 100000, 'Eval interval.')
+flags.DEFINE_integer('eval_interval', 10000, 'Eval interval.')
 flags.DEFINE_integer('save_interval', 25000, 'Eval interval.')
 flags.DEFINE_integer('batch_size', 256, 'Mini batch size.')
 flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
