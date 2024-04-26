@@ -1039,7 +1039,7 @@ import pickle
 
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string('env_name', 'hopper-medium-expert-v2', 'Environment name.')
+flags.DEFINE_string('env_name', 'walker2d-medium-expert-v2', 'Environment name.')
 
 flags.DEFINE_string('save_dir', None, 'Logging dir (if not None, save params).')
 
