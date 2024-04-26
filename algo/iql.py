@@ -1,7 +1,8 @@
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union, NamedTuple
 import numpy as np
 import jax.numpy as jnp
 import flax
+from functools import partial
 
 PRNGKey = Any
 Params = flax.core.FrozenDict[str, Any]
@@ -190,108 +191,13 @@ class TrainState(flax.struct.PyTreeNode):
         return functools.partial(self.__call__, method=method)
 
 
-import numpy as np
-from flax.core.frozen_dict import FrozenDict
-from jax import tree_util
-
-
-def get_size(data: Data) -> int:
-    sizes = tree_util.tree_map(lambda arr: len(arr), data)
-    return max(tree_util.tree_leaves(sizes))
-
-
-class Dataset(FrozenDict):
-    """
-    A class for storing (and retrieving batches of) data in nested dictionary format.
-
-    Example:
-        dataset = Dataset({
-            'observations': {
-                'image': np.random.randn(100, 28, 28, 1),
-                'state': np.random.randn(100, 4),
-            },
-            'actions': np.random.randn(100, 2),
-        })
-
-        batch = dataset.sample(32)
-        # Batch will have nested shape: {
-        # 'observations': {'image': (32, 28, 28, 1), 'state': (32, 4)},
-        # 'actions': (32, 2)
-        # }
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.size = get_size(self._dict)
-
-    def sample(self, batch_size: int, indx=None):
-        """
-        Sample a batch of data from the dataset. Use `indx` to specify a specific
-        set of indices to retrieve. Otherwise, a random sample will be drawn.
-
-        Returns a dictionary with the same structure as the original dataset.
-        """
-        if indx is None:
-            indx = np.random.randint(self.size, size=batch_size)
-        return self.get_subset(indx)
-
-    def get_subset(self, indx):
-        return tree_util.tree_map(lambda arr: arr[indx], self._dict)
-
-
-class ReplayBuffer(Dataset):
-    """
-    Dataset where data is added to the buffer.
-
-    Example:
-        example_transition = {
-            'observations': {
-                'image': np.random.randn(28, 28, 1),
-                'state': np.random.randn(4),
-            },
-            'actions': np.random.randn(2),
-        }
-        buffer = ReplayBuffer.create(example_transition, size=1000)
-        buffer.add_transition(example_transition)
-        batch = buffer.sample(32)
-
-    """
-
-    @classmethod
-    def create(cls, transition: Data, size: int):
-        def create_buffer(example):
-            example = np.array(example)
-            return np.zeros((size, *example.shape), dtype=example.dtype)
-
-        buffer_dict = tree_util.tree_map(create_buffer, transition)
-        return cls(buffer_dict)
-
-    @classmethod
-    def create_from_initial_dataset(cls, init_dataset: dict, size: int):
-        def create_buffer(init_buffer):
-            buffer = np.zeros((size, *init_buffer.shape[1:]), dtype=init_buffer.dtype)
-            buffer[: len(init_buffer)] = init_buffer
-            return buffer
-
-        buffer_dict = tree_util.tree_map(create_buffer, init_dataset)
-        dataset = cls(buffer_dict)
-        dataset.size = dataset.pointer = get_size(init_dataset)
-        return dataset
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.max_size = get_size(self._dict)
-        self.size = 0
-        self.pointer = 0
-
-    def add_transition(self, transition):
-        def set_idx(buffer, new_element):
-            buffer[self.pointer] = new_element
-
-        tree_util.tree_map(set_idx, self._dict, transition)
-        self.pointer = (self.pointer + 1) % self.max_size
-        self.size = max(self.pointer, self.size)
+class Transition(NamedTuple):
+    observations: jnp.ndarray
+    actions: jnp.ndarray
+    rewards: jnp.ndarray
+    masks: jnp.ndarray
+    dones_float: jnp.ndarray
+    next_observations: jnp.ndarray
 
 
 from typing import Dict
@@ -724,11 +630,11 @@ class IQLAgent(flax.struct.PyTreeNode):
     config: dict = flax.struct.field(pytree_node=False)
 
     @jax.jit
-    def update(agent, batch: Batch) -> InfoDict:
+    def update(agent, batch: Transition) -> InfoDict:
         def critic_loss_fn(critic_params):
-            next_v = agent.value(batch['next_observations'])
-            target_q = batch['rewards'] + agent.config['discount'] * batch['masks'] * next_v
-            q1, q2 = agent.critic(batch['observations'], batch['actions'], params=critic_params)
+            next_v = agent.value(batch.next_observations)
+            target_q = batch.rewards + agent.config['discount'] * batch.masks * next_v
+            q1, q2 = agent.critic(batch.observations, batch.actions, params=critic_params)
             critic_loss = ((q1 - target_q)**2 + (q2 - target_q)**2).mean()
             return critic_loss, {
                 'critic_loss': critic_loss,
@@ -736,9 +642,9 @@ class IQLAgent(flax.struct.PyTreeNode):
             }
         
         def value_loss_fn(value_params):
-            q1, q2 = agent.target_critic(batch['observations'], batch['actions'])
+            q1, q2 = agent.target_critic(batch.observations, batch.actions)
             q = jnp.minimum(q1, q2)
-            v = agent.value(batch['observations'], params=value_params)
+            v = agent.value(batch.observations, params=value_params)
             value_loss = expectile_loss(q-v, agent.config['expectile']).mean()
             return value_loss, {
                 'value_loss': value_loss,
@@ -746,14 +652,14 @@ class IQLAgent(flax.struct.PyTreeNode):
             }
         
         def actor_loss_fn(actor_params):
-            v = agent.value(batch['observations'])
-            q1, q2 = agent.critic(batch['observations'], batch['actions'])
+            v = agent.value(batch.observations)
+            q1, q2 = agent.critic(batch.observations, batch.actions)
             q = jnp.minimum(q1, q2)
             exp_a = jnp.exp((q - v) * agent.config['temperature'])
             exp_a = jnp.minimum(exp_a, 100.0)
 
-            dist = agent.actor(batch['observations'], params=actor_params)
-            log_probs = dist.log_prob(batch['actions'])
+            dist = agent.actor(batch.observations, params=actor_params)
+            log_probs = dist.log_prob(batch.actions)
             actor_loss = -(exp_a * log_probs).mean()
 
             return actor_loss, {'actor_loss': actor_loss, 'adv': q - v}
@@ -776,6 +682,21 @@ class IQLAgent(flax.struct.PyTreeNode):
         actions = agent.actor(observations, temperature=temperature).sample(seed=seed)
         actions = jnp.clip(actions, -1, 1)
         return actions
+    
+    @partial(jax.jit, static_argnums=(3, 4))
+    def sample_batch_and_update_n_times(
+        agent,
+        dataset: Transition,
+        rng: PRNGKey,
+        batch_size: int,
+        n_updates: int,
+    ):
+        for _ in range(n_updates):
+            rng, subkey = jax.random.split(rng)
+            batch_indices = jax.random.randint(subkey, (batch_size,), 0, len(dataset.observations))
+            batch = jax.tree_map(lambda x: x[batch_indices], dataset)
+            agent, info = agent.update(batch)
+        return agent, info
 
 def create_learner(
                  seed: int,
@@ -856,7 +777,7 @@ def make_env(env_name: str):
 
 def get_dataset(env: gym.Env,
                  clip_to_eps: bool = True,
-                 eps: float = 1e-5):
+                 eps: float = 1e-5) -> Transition:
         dataset = d4rl.qlearning_dataset(env)
 
         if clip_to_eps:
@@ -868,16 +789,15 @@ def get_dataset(env: gym.Env,
         dones_float = 1.0 - same_obs.astype(np.float32)
         dones_float[-1] = 1
         
-        dataset = {
-            'observations': dataset['observations'],
-            'actions': dataset['actions'],
-            'rewards': dataset['rewards'],
-            'masks': 1.0 - dataset['terminals'],
-            'dones_float': dones_float,
-            'next_observations': dataset['next_observations'],
-        }
-        dataset = {k: v.astype(np.float32) for k, v in dataset.items()}
-        return Dataset(dataset)
+        dataset = Transition(
+            observations=jnp.array(dataset['observations'], dtype=jnp.float32),
+            actions=jnp.array(dataset['actions'], dtype=jnp.float32),
+            rewards=jnp.array(dataset['rewards'], dtype=jnp.float32),
+            masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
+            dones_float=jnp.array(dones_float, dtype=jnp.float32),
+            next_observations=jnp.array(dataset['next_observations'], dtype=jnp.float32),
+        )
+        return dataset
 
 
 import os
@@ -906,45 +826,49 @@ flags.DEFINE_integer('eval_interval', 100000, 'Eval interval.')
 flags.DEFINE_integer('save_interval', 25000, 'Eval interval.')
 flags.DEFINE_integer('batch_size', 256, 'Mini batch size.')
 flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
+flags.DEFINE_integer('n_updates', 8, 'Number of updates per step.')
 
 config_flags.DEFINE_config_dict('config', get_default_config(), lock_config=False)
 
-def get_normalization(dataset):
-        returns = []
-        ret = 0
-        for r, term in zip(dataset['rewards'], dataset['dones_float']):
-            ret += r
-            if term:
-                returns.append(ret)
-                ret = 0
-        return (max(returns) - min(returns)) / 1000
+def get_normalization(dataset: Transition):
+    # into_numpy 
+    dataset = jax.tree_map(lambda x: np.array(x), dataset)
+    returns = []
+    ret = 0
+    for r, term in zip(dataset.rewards, dataset.dones_float):
+        ret += r
+        if term:
+            returns.append(ret)
+            ret = 0
+    return (max(returns) - min(returns)) / 1000
 
 def main(_):
     wandb.init(config=FLAGS.config, project='iql')
-
+    rng = jax.random.PRNGKey(FLAGS.seed)
     if FLAGS.save_dir is not None:
         pass
         # TODO save config
     
     env = make_env(FLAGS.env_name)
-    dataset = get_dataset(env)
+    dataset: Transition = get_dataset(env)
 
     normalizing_factor = get_normalization(dataset)
-    dataset = dataset.copy({'rewards': dataset['rewards'] / normalizing_factor})
+    dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
 
-    example_batch = dataset.sample(1)
+    example_batch = jax.tree_map(lambda x: x[0], dataset)
     agent = create_learner(FLAGS.seed,
-                    example_batch['observations'],
-                    example_batch['actions'],
+                    example_batch.observations,
+                    example_batch.actions,
                     max_steps=FLAGS.max_steps,
                     **FLAGS.config)
-    
-    for i in tqdm.tqdm(range(1, FLAGS.max_steps + 1),
+    # into jnp.ndarray
+    dataset = jax.tree_map(lambda x: jnp.asarray(x), dataset) 
+    num_steps = FLAGS.max_steps // FLAGS.n_updates 
+    for i in tqdm.tqdm(range(1, num_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
-
-        batch = dataset.sample(FLAGS.batch_size)  
-        agent, update_info = agent.update(batch)
+        rng, subkey = jax.random.split(rng)
+        agent, update_info = agent.sample_batch_and_update_n_times(dataset, subkey, FLAGS.batch_size, FLAGS.n_updates)
 
         if i % FLAGS.log_interval == 0:
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
