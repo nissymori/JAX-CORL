@@ -10,7 +10,6 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |CQL|   |   |   |
 |IQL|   |   |   |
 |TD3-BC| [algo/td3bc_copied.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc_copied.py)  | [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |   |
-|TD7|   |   |   |
 |DT|   |   |   |
 
 
