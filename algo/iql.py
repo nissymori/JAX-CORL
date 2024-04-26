@@ -45,159 +45,6 @@ def target_update(
     return target_model.replace(params=new_target_params)
 
 
-class TrainState(flax.struct.PyTreeNode):
-    """
-    Core abstraction of a model in this repository. Fully backward compatible with standard flax.training.TrainState.
-
-    Creation:
-    ```
-        model_def = nn.Dense(12) # or any other flax.linen Module
-        _, params = model_def.init(jax.random.PRNGKey(0), jnp.ones((1, 4))).pop('params')
-        model = TrainState.create(model_def, params, tx=None) # Optionally, pass in an optax optimizer
-    ```
-
-    Usage:
-    ```
-        y = model(jnp.ones((1, 4))) # By default, uses the `__call__` method of the model_def and params stored in TrainState
-        y = model(jnp.ones((1, 4)), params=params) # You can pass in params (useful for gradient computation)
-        y = model(jnp.ones((1, 4)), method=method) # You can apply a different method as well
-    ```
-
-    More complete example:
-    ```
-        def loss(params):
-            y_pred = model(x, params=params)
-            return jnp.mean((y - y_pred) ** 2)
-
-        grads = jax.grad(loss)(model.params)
-        new_model = model.apply_gradients(grads=grads) # Alternatively, new_model = model.apply_loss_fn(loss_fn=loss)
-    ```
-    """
-
-    step: int
-    apply_fn: Callable[..., Any] = nonpytree_field()
-    model_def: Any = nonpytree_field()
-    params: Params
-    extra_variables: Optional[Params] # Use this to store additional variables that are not being optimized
-    tx: Optional[optax.GradientTransformation] = nonpytree_field()
-    opt_state: Optional[optax.OptState] = None
-
-    @classmethod
-    def create(
-        cls,
-        model_def: nn.Module,
-        params: Params,
-        tx: Optional[optax.GradientTransformation] = None,
-        extra_variables: Optional[dict] = None,
-        **kwargs,
-    ) -> "TrainState":
-        if tx is not None:
-            opt_state = tx.init(params)
-        else:
-            opt_state = None
-
-        if extra_variables is None:
-            extra_variables = flax.core.FrozenDict()
-
-        return cls(
-            step=1,
-            apply_fn=model_def.apply,
-            model_def=model_def,
-            params=params,
-            extra_variables=extra_variables,
-            tx=tx,
-            opt_state=opt_state,
-            **kwargs,
-        )
-
-    def __call__(
-        self,
-        *args,
-        params: Params =None,
-        extra_variables: dict = None,
-        method: ModuleMethod = None,
-        **kwargs,
-    ):
-        """
-        Internally calls model_def.apply_fn with the following logic:
-
-        Arguments:
-            params: If not None, use these params instead of the ones stored in the model.
-            extra_variables: Additional variables to pass into apply_fn (overrides model.extra_variables if they exist)
-            method: If None, use the `__call__` method of the model_def. If a string, uses
-                the method of the model_def with that name (e.g. 'encode' -> model_def.encode).
-                If a function, uses that function.
-
-        """
-        if params is None:
-            params = self.params
-
-        if extra_variables is None:
-            extra_variables = self.extra_variables
-        variables = {"params": params, **self.extra_variables}
-
-        if isinstance(method, str):
-            method = getattr(self.model_def, method)
-
-        return self.apply_fn(variables, *args, method=method, **kwargs)
-
-    def apply_gradients(self, *, grads, **kwargs):
-        """Updates `step`, `params`, `opt_state` and `**kwargs` in return value.
-
-        Note that internally this function calls `.tx.update()` followed by a call
-        to `optax.apply_updates()` to update `params` and `opt_state`.
-
-        Args:
-            grads: Gradients that have the same pytree structure as `.params`.
-            **kwargs: Additional dataclass attributes that should be `.replace()`-ed.
-
-        Returns:
-            An updated instance of `self` with `step` incremented by one, `params`
-            and `opt_state` updated by applying `grads`, and additional attributes
-            replaced as specified by `kwargs`.
-        """
-        updates, new_opt_state = self.tx.update(grads, self.opt_state, self.params)
-        new_params = optax.apply_updates(self.params, updates)
-
-        return self.replace(
-            step=self.step + 1,
-            params=new_params,
-            opt_state=new_opt_state,
-            **kwargs,
-        )
-
-    def apply_loss_fn(self, *, loss_fn, pmap_axis=None, has_aux=False):
-        """
-        Takes a gradient step towards minimizing `loss_fn`. Internally, this calls
-        `jax.grad` followed by `TrainState.apply_gradients`. If pmap_axis is provided,
-        additionally it averages gradients (and info) across devices before performing update.
-        """
-        if has_aux:
-            grads, info = jax.grad(loss_fn, has_aux=has_aux)(self.params)
-            if pmap_axis is not None:
-                grads = jax.lax.pmean(grads, axis_name=pmap_axis)
-                info = jax.lax.pmean(info, axis_name=pmap_axis)
-            return self.apply_gradients(grads=grads), info
-
-        else:
-            grads = jax.grad(loss_fn, has_aux=has_aux)(self.params)
-            if pmap_axis is not None:
-                grads = jax.lax.pmean(grads, axis_name=pmap_axis)
-            return self.apply_gradients(grads=grads)
-    
-    def __getattr__(self, name):
-        """
-            Syntax sugar for calling methods of the model_def directly.
-
-            Example:
-            ```
-                model(x, method='encode')
-                model.encode(x) # Same as last
-        """
-        method = getattr(self.model_def, name)
-        return functools.partial(self.__call__, method=method)
-
-
 class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
@@ -334,6 +181,8 @@ def expectile_loss(diff, expectile=0.8):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
+from flax.training.train_state import TrainState
+
 class IQLAgent(flax.struct.PyTreeNode):
     rng: PRNGKey
     critic: TrainState
@@ -345,46 +194,46 @@ class IQLAgent(flax.struct.PyTreeNode):
     @jax.jit
     def update(agent, batch: Transition) -> InfoDict:
         def critic_loss_fn(critic_params):
-            next_v = agent.value(batch.next_observations)
+            next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.config['discount'] * batch.masks * next_v
-            q1, q2 = agent.critic(batch.observations, batch.actions, params=critic_params)
+            q1, q2 = agent.critic.apply_fn(critic_params, batch.observations, batch.actions)
             critic_loss = ((q1 - target_q)**2 + (q2 - target_q)**2).mean()
-            return critic_loss, {
-                'critic_loss': critic_loss,
-                'q1': q1.mean(),
-            }
+            return critic_loss
         
         def value_loss_fn(value_params):
-            q1, q2 = agent.target_critic(batch.observations, batch.actions)
+            q1, q2 = agent.target_critic.apply_fn(agent.target_critic.params, batch.observations, batch.actions)
             q = jnp.minimum(q1, q2)
-            v = agent.value(batch.observations, params=value_params)
+            v = agent.value.apply_fn(value_params, batch.observations)
             value_loss = expectile_loss(q-v, agent.config['expectile']).mean()
-            return value_loss, {
-                'value_loss': value_loss,
-                'v': v.mean(),
-            }
+            return value_loss
         
         def actor_loss_fn(actor_params):
-            v = agent.value(batch.observations)
-            q1, q2 = agent.critic(batch.observations, batch.actions)
+            v = agent.value.apply_fn(agent.value.params, batch.observations)
+            q1, q2 = agent.critic.apply_fn(agent.critic.params, batch.observations, batch.actions)
             q = jnp.minimum(q1, q2)
             exp_a = jnp.exp((q - v) * agent.config['temperature'])
             exp_a = jnp.minimum(exp_a, 100.0)
 
-            dist = agent.actor(batch.observations, params=actor_params)
+            dist = agent.actor.apply_fn(actor_params, batch.observations)
             log_probs = dist.log_prob(batch.actions)
             actor_loss = -(exp_a * log_probs).mean()
-
-            return actor_loss, {'actor_loss': actor_loss, 'adv': q - v}
+            return actor_loss
         
-        new_critic, critic_info = agent.critic.apply_loss_fn(loss_fn=critic_loss_fn, has_aux=True)
-        new_target_critic = target_update(agent.critic, agent.target_critic, agent.config['target_update_rate'])
-        new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True)
-        new_actor, actor_info = agent.actor.apply_loss_fn(loss_fn=actor_loss_fn, has_aux=True)
+        critic_grad_fn = jax.value_and_grad(critic_loss_fn)
+        critic_loss, critic_grad = critic_grad_fn(agent.critic.params)
+        new_critic = agent.critic.apply_gradients(grads=critic_grad)
 
-        return agent.replace(critic=new_critic, target_critic=new_target_critic, value=new_value, actor=new_actor), {
-            **critic_info, **value_info, **actor_info
-        }
+        new_target_critic = target_update(agent.critic, agent.target_critic, agent.config['target_update_rate'])
+
+        value_grad_fn = jax.value_and_grad(value_loss_fn)
+        value_loss, value_grad = value_grad_fn(agent.value.params)
+        new_value = agent.value.apply_gradients(grads=value_grad)
+
+        actor_grad_fn = jax.value_and_grad(actor_loss_fn)
+        actor_loss, actor_grad = actor_grad_fn(agent.actor.params)
+        new_actor = agent.actor.apply_gradients(grads=actor_grad)
+
+        return agent.replace(critic=new_critic, target_critic=new_target_critic, value=new_value, actor=new_actor), {}
 
     @jax.jit
     def sample_actions(agent,
@@ -392,7 +241,7 @@ class IQLAgent(flax.struct.PyTreeNode):
                        *,
                        seed: PRNGKey,
                        temperature: float = 1.0) -> jnp.ndarray:
-        actions = agent.actor(observations, temperature=temperature).sample(seed=seed)
+        actions = agent.actor.apply_fn(agent.actor.params, observations, temperature=temperature).sample(seed=seed)
         actions = jnp.clip(actions, -1, 1)
         return actions
     
@@ -412,21 +261,21 @@ class IQLAgent(flax.struct.PyTreeNode):
         return agent, info
 
 def create_learner(
-                 seed: int,
-                 observations: jnp.ndarray,
-                 actions: jnp.ndarray,
-                 actor_lr: float = 3e-4,
-                 value_lr: float = 3e-4,
-                 critic_lr: float = 3e-4,
-                 hidden_dims: Sequence[int] = (256, 256),
-                 discount: float = 0.99,
-                 tau: float = 0.005,
-                 expectile: float = 0.8,
-                 temperature: float = 0.1,
-                 dropout_rate: Optional[float] = None,
-                 max_steps: Optional[int] = None,
-                 opt_decay_schedule: str = "cosine",
-            **kwargs):
+    seed: int,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
+    actor_lr: float = 3e-4,
+    value_lr: float = 3e-4,
+    critic_lr: float = 3e-4,
+    hidden_dims: Sequence[int] = (256, 256),
+    discount: float = 0.99,
+    tau: float = 0.005,
+    expectile: float = 0.8,
+    temperature: float = 0.1,
+    dropout_rate: Optional[float] = None,
+    max_steps: Optional[int] = None,
+    opt_decay_schedule: str = "cosine",
+    **kwargs):
 
         print('Extra kwargs:', kwargs)
 
@@ -444,17 +293,33 @@ def create_learner(
         else:
             actor_tx = optax.adam(learning_rate=actor_lr)
 
-        actor_params = actor_def.init(actor_key, observations)['params']
-        actor = TrainState.create(actor_def, actor_params, tx=actor_tx)
+        actor_params = actor_def.init(actor_key, observations)
+        actor = TrainState.create(
+            apply_fn=actor_def.apply, 
+            params=actor_params, 
+            tx=actor_tx
+        )
 
         critic_def = ensemblize(Critic, num_qs=2)(hidden_dims)
-        critic_params = critic_def.init(critic_key, observations, actions)['params']
-        critic = TrainState.create(critic_def, critic_params, tx=optax.adam(learning_rate=critic_lr))
-        target_critic = TrainState.create(critic_def, critic_params)
+        critic_params = critic_def.init(critic_key, observations, actions)
+        critic = TrainState.create(
+            apply_fn=critic_def.apply, 
+            params=critic_params, 
+            tx=optax.adam(learning_rate=critic_lr)
+        )
+        target_critic = TrainState.create(
+            apply_fn=critic_def.apply, 
+            params=critic_params,
+            tx=optax.adam(learning_rate=critic_lr),
+        )
 
         value_def = ValueCritic(hidden_dims)
-        value_params = value_def.init(value_key, observations)['params']
-        value = TrainState.create(value_def, value_params, tx=optax.adam(learning_rate=value_lr))
+        value_params = value_def.init(value_key, observations)
+        value = TrainState.create(
+            apply_fn=value_def.apply, 
+            params=value_params, 
+            tx=optax.adam(learning_rate=value_lr)
+        )
 
         config = flax.core.FrozenDict(dict(
             discount=discount, temperature=temperature, expectile=expectile, target_update_rate=tau, 
