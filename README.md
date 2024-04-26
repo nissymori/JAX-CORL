@@ -5,12 +5,12 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 💠 Focus on **a few important algorithms**: we do not cover all algos. in [CORL](https://github.com/tinkoff-ai/CORL). Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms)
 
 # Algorithms
-| Algorithm | copied single file | implementation | wandb report |
-|---|---|---|---|
-|CQL|   |   |   |
-|IQL|   |   |   |
-|TD3-BC| [algo/td3bc_copied.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc_copied.py)  | [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |   |
-|DT|   |   |   |
+| Algorithm | implementation | wandb report |
+|---|---|---|
+|CQL|   |   |  
+|IQL|   |   |  
+|TD3-BC| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |   |
+|DT|   |   |  
 
 
 # Report
