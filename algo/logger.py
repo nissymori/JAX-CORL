@@ -4,6 +4,7 @@ Based on rllab's logger.
 
 https://github.com/rll/rllab
 """
+
 from enum import Enum
 from contextlib import contextmanager
 import numpy as np
@@ -29,7 +30,6 @@ import tempfile
 """Pretty-print tabular data."""
 
 
-
 from collections import namedtuple
 from platform import python_version_tuple
 import re
@@ -38,6 +38,7 @@ import re
 if python_version_tuple()[0] < "3":
     from itertools import izip_longest
     from functools import partial
+
     _none_type = type(None)
     _int_type = int
     _float_type = float
@@ -46,6 +47,7 @@ if python_version_tuple()[0] < "3":
 else:
     from itertools import zip_longest as izip_longest
     from functools import reduce, partial
+
     _none_type = type(None)
     _int_type = int
     _float_type = float
@@ -94,10 +96,19 @@ DataRow = namedtuple("DataRow", ["begin", "sep", "end"])
 #   - either None, to display all table elements unconditionally,
 #   - or a list of elements not to be displayed if the table has column headers.
 #
-TableFormat = namedtuple("TableFormat", ["lineabove", "linebelowheader",
-                                         "linebetweenrows", "linebelow",
-                                         "headerrow", "datarow",
-                                         "padding", "with_header_hide"])
+TableFormat = namedtuple(
+    "TableFormat",
+    [
+        "lineabove",
+        "linebelowheader",
+        "linebetweenrows",
+        "linebelow",
+        "headerrow",
+        "datarow",
+        "padding",
+        "with_header_hide",
+    ],
+)
 
 
 def _pipe_segment_with_colons(align, colwidth):
@@ -105,13 +116,13 @@ def _pipe_segment_with_colons(align, colwidth):
     indicate column's alignment (as in `pipe` output format)."""
     w = colwidth
     if align in ["right", "decimal"]:
-        return ('-' * (w - 1)) + ":"
+        return ("-" * (w - 1)) + ":"
     elif align == "center":
-        return ":" + ('-' * (w - 2)) + ":"
+        return ":" + ("-" * (w - 2)) + ":"
     elif align == "left":
-        return ":" + ('-' * (w - 1))
+        return ":" + ("-" * (w - 1))
     else:
-        return '-' * w
+        return "-" * w
 
 
 def _pipe_line_with_colons(colwidths, colaligns):
@@ -122,95 +133,124 @@ def _pipe_line_with_colons(colwidths, colaligns):
 
 
 def _mediawiki_row_with_attrs(separator, cell_values, colwidths, colaligns):
-    alignment = { "left":    '',
-                  "right":   'align="right"| ',
-                  "center":  'align="center"| ',
-                  "decimal": 'align="right"| ' }
+    alignment = {
+        "left": "",
+        "right": 'align="right"| ',
+        "center": 'align="center"| ',
+        "decimal": 'align="right"| ',
+    }
     # hard-coded padding _around_ align attribute and value together
     # rather than padding parameter which affects only the value
-    values_with_attrs = [' ' + alignment.get(a, '') + c + ' '
-                         for c, a in zip(cell_values, colaligns)]
-    colsep = separator*2
+    values_with_attrs = [
+        " " + alignment.get(a, "") + c + " " for c, a in zip(cell_values, colaligns)
+    ]
+    colsep = separator * 2
     return (separator + colsep.join(values_with_attrs)).rstrip()
 
 
 def _latex_line_begin_tabular(colwidths, colaligns):
-    alignment = { "left": "l", "right": "r", "center": "c", "decimal": "r" }
+    alignment = {"left": "l", "right": "r", "center": "c", "decimal": "r"}
     tabular_columns_fmt = "".join([alignment.get(a, "l") for a in colaligns])
     return "\\begin{tabular}{" + tabular_columns_fmt + "}\n\hline"
 
 
-_table_formats = {"simple":
-                  TableFormat(lineabove=Line("", "-", "  ", ""),
-                              linebelowheader=Line("", "-", "  ", ""),
-                              linebetweenrows=None,
-                              linebelow=Line("", "-", "  ", ""),
-                              headerrow=DataRow("", "  ", ""),
-                              datarow=DataRow("", "  ", ""),
-                              padding=0,
-                              with_header_hide=["lineabove", "linebelow"]),
-                  "plain":
-                  TableFormat(lineabove=None, linebelowheader=None,
-                              linebetweenrows=None, linebelow=None,
-                              headerrow=DataRow("", "  ", ""),
-                              datarow=DataRow("", "  ", ""),
-                              padding=0, with_header_hide=None),
-                  "grid":
-                  TableFormat(lineabove=Line("+", "-", "+", "+"),
-                              linebelowheader=Line("+", "=", "+", "+"),
-                              linebetweenrows=Line("+", "-", "+", "+"),
-                              linebelow=Line("+", "-", "+", "+"),
-                              headerrow=DataRow("|", "|", "|"),
-                              datarow=DataRow("|", "|", "|"),
-                              padding=1, with_header_hide=None),
-                  "pipe":
-                  TableFormat(lineabove=_pipe_line_with_colons,
-                              linebelowheader=_pipe_line_with_colons,
-                              linebetweenrows=None,
-                              linebelow=None,
-                              headerrow=DataRow("|", "|", "|"),
-                              datarow=DataRow("|", "|", "|"),
-                              padding=1,
-                              with_header_hide=["lineabove"]),
-                  "orgtbl":
-                  TableFormat(lineabove=None,
-                              linebelowheader=Line("|", "-", "+", "|"),
-                              linebetweenrows=None,
-                              linebelow=None,
-                              headerrow=DataRow("|", "|", "|"),
-                              datarow=DataRow("|", "|", "|"),
-                              padding=1, with_header_hide=None),
-                  "rst":
-                  TableFormat(lineabove=Line("", "=", "  ", ""),
-                              linebelowheader=Line("", "=", "  ", ""),
-                              linebetweenrows=None,
-                              linebelow=Line("", "=", "  ", ""),
-                              headerrow=DataRow("", "  ", ""),
-                              datarow=DataRow("", "  ", ""),
-                              padding=0, with_header_hide=None),
-                  "mediawiki":
-                  TableFormat(lineabove=Line("{| class=\"wikitable\" style=\"text-align: left;\"",
-                                             "", "", "\n|+ <!-- caption -->\n|-"),
-                              linebelowheader=Line("|-", "", "", ""),
-                              linebetweenrows=Line("|-", "", "", ""),
-                              linebelow=Line("|}", "", "", ""),
-                              headerrow=partial(_mediawiki_row_with_attrs, "!"),
-                              datarow=partial(_mediawiki_row_with_attrs, "|"),
-                              padding=0, with_header_hide=None),
-                  "latex":
-                  TableFormat(lineabove=_latex_line_begin_tabular,
-                              linebelowheader=Line("\\hline", "", "", ""),
-                              linebetweenrows=None,
-                              linebelow=Line("\\hline\n\\end{tabular}", "", "", ""),
-                              headerrow=DataRow("", "&", "\\\\"),
-                              datarow=DataRow("", "&", "\\\\"),
-                              padding=1, with_header_hide=None),
-                  "tsv":
-                  TableFormat(lineabove=None, linebelowheader=None,
-                              linebetweenrows=None, linebelow=None,
-                              headerrow=DataRow("", "\t", ""),
-                              datarow=DataRow("", "\t", ""),
-                              padding=0, with_header_hide=None)}
+_table_formats = {
+    "simple": TableFormat(
+        lineabove=Line("", "-", "  ", ""),
+        linebelowheader=Line("", "-", "  ", ""),
+        linebetweenrows=None,
+        linebelow=Line("", "-", "  ", ""),
+        headerrow=DataRow("", "  ", ""),
+        datarow=DataRow("", "  ", ""),
+        padding=0,
+        with_header_hide=["lineabove", "linebelow"],
+    ),
+    "plain": TableFormat(
+        lineabove=None,
+        linebelowheader=None,
+        linebetweenrows=None,
+        linebelow=None,
+        headerrow=DataRow("", "  ", ""),
+        datarow=DataRow("", "  ", ""),
+        padding=0,
+        with_header_hide=None,
+    ),
+    "grid": TableFormat(
+        lineabove=Line("+", "-", "+", "+"),
+        linebelowheader=Line("+", "=", "+", "+"),
+        linebetweenrows=Line("+", "-", "+", "+"),
+        linebelow=Line("+", "-", "+", "+"),
+        headerrow=DataRow("|", "|", "|"),
+        datarow=DataRow("|", "|", "|"),
+        padding=1,
+        with_header_hide=None,
+    ),
+    "pipe": TableFormat(
+        lineabove=_pipe_line_with_colons,
+        linebelowheader=_pipe_line_with_colons,
+        linebetweenrows=None,
+        linebelow=None,
+        headerrow=DataRow("|", "|", "|"),
+        datarow=DataRow("|", "|", "|"),
+        padding=1,
+        with_header_hide=["lineabove"],
+    ),
+    "orgtbl": TableFormat(
+        lineabove=None,
+        linebelowheader=Line("|", "-", "+", "|"),
+        linebetweenrows=None,
+        linebelow=None,
+        headerrow=DataRow("|", "|", "|"),
+        datarow=DataRow("|", "|", "|"),
+        padding=1,
+        with_header_hide=None,
+    ),
+    "rst": TableFormat(
+        lineabove=Line("", "=", "  ", ""),
+        linebelowheader=Line("", "=", "  ", ""),
+        linebetweenrows=None,
+        linebelow=Line("", "=", "  ", ""),
+        headerrow=DataRow("", "  ", ""),
+        datarow=DataRow("", "  ", ""),
+        padding=0,
+        with_header_hide=None,
+    ),
+    "mediawiki": TableFormat(
+        lineabove=Line(
+            '{| class="wikitable" style="text-align: left;"',
+            "",
+            "",
+            "\n|+ <!-- caption -->\n|-",
+        ),
+        linebelowheader=Line("|-", "", "", ""),
+        linebetweenrows=Line("|-", "", "", ""),
+        linebelow=Line("|}", "", "", ""),
+        headerrow=partial(_mediawiki_row_with_attrs, "!"),
+        datarow=partial(_mediawiki_row_with_attrs, "|"),
+        padding=0,
+        with_header_hide=None,
+    ),
+    "latex": TableFormat(
+        lineabove=_latex_line_begin_tabular,
+        linebelowheader=Line("\\hline", "", "", ""),
+        linebetweenrows=None,
+        linebelow=Line("\\hline\n\\end{tabular}", "", "", ""),
+        headerrow=DataRow("", "&", "\\\\"),
+        datarow=DataRow("", "&", "\\\\"),
+        padding=1,
+        with_header_hide=None,
+    ),
+    "tsv": TableFormat(
+        lineabove=None,
+        linebelowheader=None,
+        linebetweenrows=None,
+        linebelow=None,
+        headerrow=DataRow("", "\t", ""),
+        datarow=DataRow("", "\t", ""),
+        padding=0,
+        with_header_hide=None,
+    ),
+}
 
 
 tabulate_formats = list(sorted(_table_formats.keys()))
@@ -221,17 +261,16 @@ _invisible_codes_bytes = re.compile(b"\x1b\[\d*m")  # ANSI color codes
 
 
 def simple_separated_format(separator):
-    """Construct a simple TableFormat with columns separated by a separator.
-
-    >>> tsv = simple_separated_format("\\t") ; \
-        tabulate([["foo", 1], ["spam", 23]], tablefmt=tsv) == 'foo \\t 1\\nspam\\t23'
-    True
-
-    """
-    return TableFormat(None, None, None, None,
-                       headerrow=DataRow('', separator, ''),
-                       datarow=DataRow('', separator, ''),
-                       padding=0, with_header_hide=None)
+    return TableFormat(
+        None,
+        None,
+        None,
+        None,
+        headerrow=DataRow("", separator, ""),
+        datarow=DataRow("", separator, ""),
+        padding=0,
+        with_header_hide=None,
+    )
 
 
 def _isconvertible(conv, string):
@@ -261,9 +300,11 @@ def _isint(string):
     >>> _isint("123.45")
     False
     """
-    return type(string) is int or \
-           (isinstance(string, _binary_type) or isinstance(string, _text_type)) and \
-           _isconvertible(int, string)
+    return (
+        type(string) is int
+        or (isinstance(string, _binary_type) or isinstance(string, _text_type))
+        and _isconvertible(int, string)
+    )
 
 
 def _type(string, has_invisible=True):
@@ -282,8 +323,9 @@ def _type(string, has_invisible=True):
 
     """
 
-    if has_invisible and \
-       (isinstance(string, _text_type) or isinstance(string, _binary_type)):
+    if has_invisible and (
+        isinstance(string, _text_type) or isinstance(string, _binary_type)
+    ):
         string = _strip_invisible(string)
 
     if string is None:
@@ -403,8 +445,7 @@ def _align_column(strings, alignment, minwidth=0, has_invisible=True):
     elif alignment == "decimal":
         decimals = [_afterpoint(s) for s in strings]
         maxdecimals = max(decimals)
-        strings = [s + (maxdecimals - decs) * " "
-                   for s, decs in zip(strings, decimals)]
+        strings = [s + (maxdecimals - decs) * " " for s, decs in zip(strings, decimals)]
         padfn = _padleft
     elif not alignment:
         return strings
@@ -423,8 +464,8 @@ def _align_column(strings, alignment, minwidth=0, has_invisible=True):
 
 
 def _more_generic(type1, type2):
-    types = { _none_type: 0, int: 1, float: 2, _binary_type: 3, _text_type: 4 }
-    invtypes = { 4: _text_type, 3: _binary_type, 2: float, 1: int, 0: _none_type }
+    types = {_none_type: 0, int: 1, float: 2, _binary_type: 3, _text_type: 4}
+    invtypes = {4: _text_type, 3: _binary_type, 2: float, 1: int, 0: _none_type}
     moregeneric = max(types.get(type1, 4), types.get(type2, 4))
     return invtypes[moregeneric]
 
@@ -449,7 +490,7 @@ def _column_type(strings, has_invisible=True):
     True
 
     """
-    types = [_type(s, has_invisible) for s in strings ]
+    types = [_type(s, has_invisible) for s in strings]
     return reduce(_more_generic, types, int)
 
 
@@ -516,56 +557,68 @@ def _normalize_tabular_data(tabular_data, headers):
         if hasattr(tabular_data.values, "__call__"):
             # likely a conventional dict
             keys = list(tabular_data.keys())
-            rows = list(zip_longest(*list(tabular_data.values())))  # columns have to be transposed
+            rows = list(
+                zip_longest(*list(tabular_data.values()))
+            )  # columns have to be transposed
         elif hasattr(tabular_data, "index"):
             # values is a property, has .index => it's likely a pandas.DataFrame (pandas 0.11.0)
             keys = list(tabular_data.keys())
             vals = tabular_data.values  # values matrix doesn't need to be transposed
             names = tabular_data.index
-            rows = [[v]+list(row) for v,row in zip(names, vals)]
+            rows = [[v] + list(row) for v, row in zip(names, vals)]
         else:
             raise ValueError("tabular data doesn't appear to be a dict or a DataFrame")
 
         if headers == "keys":
-            headers = list(map(_text_type,keys))  # headers should be strings
+            headers = list(map(_text_type, keys))  # headers should be strings
 
     else:  # it's a usual an iterable of iterables, or a NumPy array
         rows = list(tabular_data)
 
-        if (headers == "keys" and
-            hasattr(tabular_data, "dtype") and
-            getattr(tabular_data.dtype, "names")):
+        if (
+            headers == "keys"
+            and hasattr(tabular_data, "dtype")
+            and getattr(tabular_data.dtype, "names")
+        ):
             # numpy record array
             headers = tabular_data.dtype.names
-        elif (headers == "keys"
-              and len(rows) > 0
-              and isinstance(rows[0], tuple)
-              and hasattr(rows[0], "_fields")): # namedtuple
+        elif (
+            headers == "keys"
+            and len(rows) > 0
+            and isinstance(rows[0], tuple)
+            and hasattr(rows[0], "_fields")
+        ):  # namedtuple
             headers = list(map(_text_type, rows[0]._fields))
         elif headers == "keys" and len(rows) > 0:  # keys are column indices
             headers = list(map(_text_type, list(range(len(rows[0])))))
 
     # take headers from the first row if necessary
     if headers == "firstrow" and len(rows) > 0:
-        headers = list(map(_text_type, rows[0])) # headers should be strings
+        headers = list(map(_text_type, rows[0]))  # headers should be strings
         rows = rows[1:]
 
     headers = list(headers)
-    rows = list(map(list,rows))
+    rows = list(map(list, rows))
 
     # pad with empty headers for initial columns if necessary
     if headers and len(rows) > 0:
-       nhs = len(headers)
-       ncols = len(rows[0])
-       if nhs < ncols:
-           headers = [""]*(ncols - nhs) + headers
+        nhs = len(headers)
+        ncols = len(rows[0])
+        if nhs < ncols:
+            headers = [""] * (ncols - nhs) + headers
 
     return rows, headers
 
 
-def tabulate(tabular_data, headers=[], tablefmt="simple",
-             floatfmt="g", numalign="decimal", stralign="left",
-             missingval=""):
+def tabulate(
+    tabular_data,
+    headers=[],
+    tablefmt="simple",
+    floatfmt="g",
+    numalign="decimal",
+    stralign="left",
+    missingval="",
+):
     """Format a fixed width table for pretty printing.
 
     >>> print(tabulate([[1, 2.34], [-56, "8.999"], ["2", "10001"]]))
@@ -766,8 +819,10 @@ def tabulate(tabular_data, headers=[], tablefmt="simple",
 
     # optimization: look for ANSI control codes once,
     # enable smart width functions only if a control code is found
-    plain_text = '\n'.join(['\t'.join(map(_text_type, headers))] + \
-                            ['\t'.join(map(_text_type, row)) for row in list_of_lists])
+    plain_text = "\n".join(
+        ["\t".join(map(_text_type, headers))]
+        + ["\t".join(map(_text_type, row)) for row in list_of_lists]
+    )
     has_invisible = re.search(_invisible_codes, plain_text)
     if has_invisible:
         width_fn = _visible_width
@@ -777,20 +832,25 @@ def tabulate(tabular_data, headers=[], tablefmt="simple",
     # format rows and columns, convert numeric values to strings
     cols = list(zip(*list_of_lists))
     coltypes = list(map(_column_type, cols))
-    cols = [[_format(v, ct, floatfmt, missingval) for v in c]
-             for c,ct in zip(cols, coltypes)]
+    cols = [
+        [_format(v, ct, floatfmt, missingval) for v in c]
+        for c, ct in zip(cols, coltypes)
+    ]
 
     # align columns
-    aligns = [numalign if ct in [int,float] else stralign for ct in coltypes]
-    minwidths = [width_fn(h)+2 for h in headers] if headers else [0]*len(cols)
-    cols = [_align_column(c, a, minw, has_invisible)
-            for c, a, minw in zip(cols, aligns, minwidths)]
+    aligns = [numalign if ct in [int, float] else stralign for ct in coltypes]
+    minwidths = [width_fn(h) + 2 for h in headers] if headers else [0] * len(cols)
+    cols = [
+        _align_column(c, a, minw, has_invisible)
+        for c, a, minw in zip(cols, aligns, minwidths)
+    ]
 
     if headers:
         # align headers and add headers
         minwidths = [max(minw, width_fn(c[0])) for minw, c in zip(minwidths, cols)]
-        headers = [_align_header(h, a, minw)
-                   for h, a, minw in zip(headers, aligns, minwidths)]
+        headers = [
+            _align_header(h, a, minw) for h, a, minw in zip(headers, aligns, minwidths)
+        ]
         rows = list(zip(*cols))
     else:
         minwidths = [width_fn(c[0]) for c in cols]
@@ -825,14 +885,14 @@ def _build_line(colwidths, colaligns, linefmt):
     if hasattr(linefmt, "__call__"):
         return linefmt(colwidths, colaligns)
     else:
-        begin, fill, sep,  end = linefmt
-        cells = [fill*w for w in colwidths]
+        begin, fill, sep, end = linefmt
+        cells = [fill * w for w in colwidths]
         return _build_simple_row(cells, (begin, sep, end))
 
 
 def _pad_row(cells, padding):
     if cells:
-        pad = " "*padding
+        pad = " " * padding
         padded_cells = [pad + cell + pad for cell in cells]
         return padded_cells
     else:
@@ -846,7 +906,7 @@ def _format_table(fmt, headers, rows, colwidths, colaligns):
     pad = fmt.padding
     headerrow = fmt.headerrow
 
-    padded_widths = [(w + 2*pad) for w in colwidths]
+    padded_widths = [(w + 2 * pad) for w in colwidths]
     padded_headers = _pad_row(headers, pad)
     padded_rows = [_pad_row(row, pad) for row in rows]
 
@@ -890,8 +950,9 @@ class TerminalTablePrinter(object):
 
     def refresh(self):
         import os
-        rows, columns = os.popen('stty size', 'r').read().split()
-        tabulars = self.tabulars[-(int(rows) - 3):]
+
+        rows, columns = os.popen("stty size", "r").read().split()
+        tabulars = self.tabulars[-(int(rows) - 3) :]
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.write(tabulate(tabulars, self.headers))
         sys.stdout.write("\n")
@@ -900,15 +961,11 @@ class TerminalTablePrinter(object):
 class MyEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, type):
-            return {'$class': o.__module__ + "." + o.__name__}
+            return {"$class": o.__module__ + "." + o.__name__}
         elif isinstance(o, Enum):
-            return {
-                '$enum': o.__module__ + "." + o.__class__.__name__ + '.' + o.name
-            }
+            return {"$enum": o.__module__ + "." + o.__class__.__name__ + "." + o.name}
         elif callable(o):
-            return {
-                '$function': o.__module__ + "." + o.__name__
-            }
+            return {"$function": o.__module__ + "." + o.__name__}
         return json.JSONEncoder.default(self, o)
 
 
@@ -925,10 +982,10 @@ def mkdir_p(path):
 class Logger(object):
     def __init__(self):
         self._prefixes = []
-        self._prefix_str = ''
+        self._prefix_str = ""
 
         self._tabular_prefixes = []
-        self._tabular_prefix_str = ''
+        self._tabular_prefix_str = ""
 
         self._tabular = []
 
@@ -940,7 +997,7 @@ class Logger(object):
         self._tabular_header_written = set()
 
         self._snapshot_dir = None
-        self._snapshot_mode = 'all'
+        self._snapshot_mode = "all"
         self._snapshot_gap = 1
 
         self._log_tabular_only = False
@@ -950,7 +1007,7 @@ class Logger(object):
     def reset(self):
         self.__init__()
 
-    def _add_output(self, file_name, arr, fds, mode='a'):
+    def _add_output(self, file_name, arr, fds, mode="a"):
         if file_name not in arr:
             mkdir_p(os.path.dirname(file_name))
             arr.append(file_name)
@@ -964,11 +1021,10 @@ class Logger(object):
 
     def push_prefix(self, prefix):
         self._prefixes.append(prefix)
-        self._prefix_str = ''.join(self._prefixes)
+        self._prefix_str = "".join(self._prefixes)
 
     def add_text_output(self, file_name):
-        self._add_output(file_name, self._text_outputs, self._text_fds,
-                         mode='a')
+        self._add_output(file_name, self._text_outputs, self._text_fds, mode="a")
 
     def remove_text_output(self, file_name):
         self._remove_output(file_name, self._text_outputs, self._text_fds)
@@ -976,8 +1032,7 @@ class Logger(object):
     def add_tabular_output(self, file_name, relative_to_snapshot_dir=False):
         if relative_to_snapshot_dir:
             file_name = osp.join(self._snapshot_dir, file_name)
-        self._add_output(file_name, self._tabular_outputs, self._tabular_fds,
-                         mode='w')
+        self._add_output(file_name, self._tabular_outputs, self._tabular_fds, mode="w")
 
     def remove_tabular_output(self, file_name, relative_to_snapshot_dir=False):
         if relative_to_snapshot_dir:
@@ -989,16 +1044,22 @@ class Logger(object):
     def set_snapshot_dir(self, dir_name):
         self._snapshot_dir = dir_name
 
-    def get_snapshot_dir(self, ):
+    def get_snapshot_dir(
+        self,
+    ):
         return self._snapshot_dir
 
-    def get_snapshot_mode(self, ):
+    def get_snapshot_mode(
+        self,
+    ):
         return self._snapshot_mode
 
     def set_snapshot_mode(self, mode):
         self._snapshot_mode = mode
 
-    def get_snapshot_gap(self, ):
+    def get_snapshot_gap(
+        self,
+    ):
         return self._snapshot_gap
 
     def set_snapshot_gap(self, gap):
@@ -1007,7 +1068,9 @@ class Logger(object):
     def set_log_tabular_only(self, log_tabular_only):
         self._log_tabular_only = log_tabular_only
 
-    def get_log_tabular_only(self, ):
+    def get_log_tabular_only(
+        self,
+    ):
         return self._log_tabular_only
 
     def log(self, s, with_prefix=True, with_timestamp=True):
@@ -1016,13 +1079,13 @@ class Logger(object):
             out = self._prefix_str + out
         if with_timestamp:
             now = datetime.datetime.now(dateutil.tz.tzlocal())
-            timestamp = now.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S.%f %Z")
             out = "%s | %s" % (timestamp, out)
         if not self._log_tabular_only:
             # Also log to stdout
             print(out)
             for fd in list(self._text_fds.values()):
-                fd.write(out + '\n')
+                fd.write(out + "\n")
                 fd.flush()
             sys.stdout.flush()
 
@@ -1039,32 +1102,39 @@ class Logger(object):
 
     def push_tabular_prefix(self, key):
         self._tabular_prefixes.append(key)
-        self._tabular_prefix_str = ''.join(self._tabular_prefixes)
+        self._tabular_prefix_str = "".join(self._tabular_prefixes)
 
-    def pop_tabular_prefix(self, ):
+    def pop_tabular_prefix(
+        self,
+    ):
         del self._tabular_prefixes[-1]
-        self._tabular_prefix_str = ''.join(self._tabular_prefixes)
+        self._tabular_prefix_str = "".join(self._tabular_prefixes)
 
-    def save_extra_data(self, data, file_name='extra_data.pkl', mode='joblib'):
+    def save_extra_data(self, data, file_name="extra_data.pkl", mode="joblib"):
         """
         Data saved here will always override the last entry
 
         :param data: Something pickle'able.
         """
         file_name = osp.join(self._snapshot_dir, file_name)
-        if mode == 'joblib':
+        if mode == "joblib":
             import joblib
+
             joblib.dump(data, file_name, compress=3)
-        elif mode == 'pickle':
+        elif mode == "pickle":
             pickle.dump(data, open(file_name, "wb"))
         else:
             raise ValueError("Invalid mode: {}".format(mode))
         return file_name
 
-    def get_table_dict(self, ):
+    def get_table_dict(
+        self,
+    ):
         return dict(self._tabular)
 
-    def get_table_key_set(self, ):
+    def get_table_key_set(
+        self,
+    ):
         return set(key for key, value in self._tabular)
 
     @contextmanager
@@ -1086,8 +1156,8 @@ class Logger(object):
         with open(log_file, "w") as f:
             json.dump(variant_data, f, indent=2, sort_keys=True, cls=MyEncoder)
 
-    def record_tabular_misc_stat(self, key, values, placement='back'):
-        if placement == 'front':
+    def record_tabular_misc_stat(self, key, values, placement="back"):
+        if placement == "front":
             prefix = ""
             suffix = key
         else:
@@ -1112,25 +1182,29 @@ class Logger(object):
             if self._log_tabular_only:
                 self.table_printer.print_tabular(self._tabular)
             else:
-                for line in tabulate(self._tabular).split('\n'):
+                for line in tabulate(self._tabular).split("\n"):
                     self.log(line, *args, **kwargs)
             tabular_dict = dict(self._tabular)
             # Also write to the csv files
             # This assumes that the keys in each iteration won't change!
             for tabular_fd in list(self._tabular_fds.values()):
-                writer = csv.DictWriter(tabular_fd,
-                                        fieldnames=list(tabular_dict.keys()))
+                writer = csv.DictWriter(
+                    tabular_fd, fieldnames=list(tabular_dict.keys())
+                )
                 if wh or (
-                        wh is None and tabular_fd not in self._tabular_header_written):
+                    wh is None and tabular_fd not in self._tabular_header_written
+                ):
                     writer.writeheader()
                     self._tabular_header_written.add(tabular_fd)
                 writer.writerow(tabular_dict)
                 tabular_fd.flush()
             del self._tabular[:]
 
-    def pop_prefix(self, ):
+    def pop_prefix(
+        self,
+    ):
         del self._prefixes[-1]
-        self._prefix_str = ''.join(self._prefixes)
+        self._prefix_str = "".join(self._prefixes)
 
 
 def safe_json(data):
@@ -1171,16 +1245,16 @@ def create_exp_name(exp_prefix, exp_id=0, seed=0):
     :return:
     """
     now = datetime.datetime.now(dateutil.tz.tzlocal())
-    timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
+    timestamp = now.strftime("%Y_%m_%d_%H_%M_%S")
     return "%s_%s-s-%d--%s" % (exp_prefix, timestamp, seed, str(exp_id))
 
 
 def create_log_dir(
-        exp_prefix,
-        exp_id=0,
-        seed=0,
-        base_log_dir=None,
-        include_exp_prefix_sub_dir=True,
+    exp_prefix,
+    exp_id=0,
+    seed=0,
+    base_log_dir=None,
+    include_exp_prefix_sub_dir=True,
 ):
     """
     Creates and returns a unique log directory.
@@ -1192,8 +1266,7 @@ def create_log_dir(
     :param base_log_dir: The directory where all log should be saved.
     :return:
     """
-    exp_name = create_exp_name(exp_prefix, exp_id=exp_id,
-                               seed=seed)
+    exp_name = create_exp_name(exp_prefix, exp_id=exp_id, seed=seed)
     if base_log_dir is None:
         base_log_dir = conf.LOCAL_LOG_DIR
     if include_exp_prefix_sub_dir:
@@ -1207,16 +1280,16 @@ def create_log_dir(
 
 
 def setup_logger(
-        exp_prefix="default",
-        variant=None,
-        text_log_file="debug.log",
-        variant_log_file="variant.json",
-        tabular_log_file="progress.csv",
-        snapshot_mode="last",
-        snapshot_gap=1,
-        log_tabular_only=False,
-        base_log_dir=None,
-        **create_log_dir_kwargs
+    exp_prefix="default",
+    variant=None,
+    text_log_file="debug.log",
+    variant_log_file="variant.json",
+    tabular_log_file="progress.csv",
+    snapshot_mode="last",
+    snapshot_gap=1,
+    log_tabular_only=False,
+    base_log_dir=None,
+    **create_log_dir_kwargs
 ):
     """
     Set up logger to have some reasonable default settings.

@@ -49,7 +49,7 @@ import wandb
 import tempfile
 import absl.flags as flags
 import ml_collections
-from  ml_collections.config_dict import FieldReference
+from ml_collections.config_dict import FieldReference
 import datetime
 import wandb
 import time
@@ -68,15 +68,21 @@ def default_wandb_config():
     config = ml_collections.ConfigDict()
     config.offline = False  # Syncs online or not?
     config.project = "jaxrl_m"  # WandB Project Name
-    config.entity = FieldReference(None, field_type=str)  # Which entity to log as (default: your own user)
+    config.entity = FieldReference(
+        None, field_type=str
+    )  # Which entity to log as (default: your own user)
 
     group_name = FieldReference(None, field_type=str)  # Group name
-    config.exp_prefix = group_name  # Group name (deprecated, but kept for backwards compatibility)
+    config.exp_prefix = (
+        group_name  # Group name (deprecated, but kept for backwards compatibility)
+    )
     config.group = group_name  # Group name
 
-    experiment_name = FieldReference(None, field_type=str) # Experiment name
+    experiment_name = FieldReference(None, field_type=str)  # Experiment name
     config.name = experiment_name  # Run name (will be formatted with flags / variant)
-    config.exp_descriptor = experiment_name  # Run name (deprecated, but kept for backwards compatibility)
+    config.exp_descriptor = (
+        experiment_name  # Run name (deprecated, but kept for backwards compatibility)
+    )
 
     config.unique_identifier = ""  # Unique identifier for run (will be automatically generated unless provided)
     config.random_delay = 0  # Random delay for wandb.init (in seconds)
@@ -173,6 +179,7 @@ import functools
 
 nonpytree_field = functools.partial(flax.struct.field, pytree_node=False)
 
+
 def target_update(
     model: "TrainState", target_model: "TrainState", tau: float
 ) -> "TrainState":
@@ -215,7 +222,9 @@ class TrainState(flax.struct.PyTreeNode):
     apply_fn: Callable[..., Any] = nonpytree_field()
     model_def: Any = nonpytree_field()
     params: Params
-    extra_variables: Optional[Params] # Use this to store additional variables that are not being optimized
+    extra_variables: Optional[
+        Params
+    ]  # Use this to store additional variables that are not being optimized
     tx: Optional[optax.GradientTransformation] = nonpytree_field()
     opt_state: Optional[optax.OptState] = None
 
@@ -250,7 +259,7 @@ class TrainState(flax.struct.PyTreeNode):
     def __call__(
         self,
         *args,
-        params: Params =None,
+        params: Params = None,
         extra_variables: dict = None,
         method: ModuleMethod = None,
         **kwargs,
@@ -321,15 +330,15 @@ class TrainState(flax.struct.PyTreeNode):
             if pmap_axis is not None:
                 grads = jax.lax.pmean(grads, axis_name=pmap_axis)
             return self.apply_gradients(grads=grads)
-    
+
     def __getattr__(self, name):
         """
-            Syntax sugar for calling methods of the model_def directly.
+        Syntax sugar for calling methods of the model_def directly.
 
-            Example:
-            ```
-                model(x, method='encode')
-                model.encode(x) # Same as last
+        Example:
+        ```
+            model(x, method='encode')
+            model.encode(x) # Same as last
         """
         method = getattr(self.model_def, name)
         return functools.partial(self.__call__, method=method)
@@ -702,7 +711,7 @@ def ensemblize(cls, num_qs, out_axes=0, **kwargs):
         in_axes=None,
         out_axes=out_axes,
         axis_size=num_qs,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -856,9 +865,11 @@ import optax
 
 import flax
 
+
 def expectile_loss(diff, expectile=0.8):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
+
 
 class IQLAgent(flax.struct.PyTreeNode):
     rng: PRNGKey
@@ -871,122 +882,162 @@ class IQLAgent(flax.struct.PyTreeNode):
     @jax.jit
     def update(agent, batch: Batch) -> InfoDict:
         def critic_loss_fn(critic_params):
-            next_v = agent.value(batch['next_observations'])
-            target_q = batch['rewards'] + agent.config['discount'] * batch['masks'] * next_v
-            q1, q2 = agent.critic(batch['observations'], batch['actions'], params=critic_params)
-            critic_loss = ((q1 - target_q)**2 + (q2 - target_q)**2).mean()
+            next_v = agent.value(batch["next_observations"])
+            target_q = (
+                batch["rewards"] + agent.config["discount"] * batch["masks"] * next_v
+            )
+            q1, q2 = agent.critic(
+                batch["observations"], batch["actions"], params=critic_params
+            )
+            critic_loss = ((q1 - target_q) ** 2 + (q2 - target_q) ** 2).mean()
             return critic_loss, {
-                'critic_loss': critic_loss,
-                'q1': q1.mean(),
+                "critic_loss": critic_loss,
+                "q1": q1.mean(),
             }
-        
+
         def value_loss_fn(value_params):
-            q1, q2 = agent.target_critic(batch['observations'], batch['actions'])
+            q1, q2 = agent.target_critic(batch["observations"], batch["actions"])
             q = jnp.minimum(q1, q2)
-            v = agent.value(batch['observations'], params=value_params)
-            value_loss = expectile_loss(q-v, agent.config['expectile']).mean()
+            v = agent.value(batch["observations"], params=value_params)
+            value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
             return value_loss, {
-                'value_loss': value_loss,
-                'v': v.mean(),
+                "value_loss": value_loss,
+                "v": v.mean(),
             }
-        
+
         def actor_loss_fn(actor_params):
-            v = agent.value(batch['observations'])
-            q1, q2 = agent.critic(batch['observations'], batch['actions'])
+            v = agent.value(batch["observations"])
+            q1, q2 = agent.critic(batch["observations"], batch["actions"])
             q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * agent.config['temperature'])
+            exp_a = jnp.exp((q - v) * agent.config["temperature"])
             exp_a = jnp.minimum(exp_a, 100.0)
 
-            dist = agent.actor(batch['observations'], params=actor_params)
-            log_probs = dist.log_prob(batch['actions'])
+            dist = agent.actor(batch["observations"], params=actor_params)
+            log_probs = dist.log_prob(batch["actions"])
             actor_loss = -(exp_a * log_probs).mean()
 
-            return actor_loss, {'actor_loss': actor_loss, 'adv': q - v}
-        
-        new_critic, critic_info = agent.critic.apply_loss_fn(loss_fn=critic_loss_fn, has_aux=True)
-        new_target_critic = target_update(agent.critic, agent.target_critic, agent.config['target_update_rate'])
-        new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True)
-        new_actor, actor_info = agent.actor.apply_loss_fn(loss_fn=actor_loss_fn, has_aux=True)
+            return actor_loss, {"actor_loss": actor_loss, "adv": q - v}
 
-        return agent.replace(critic=new_critic, target_critic=new_target_critic, value=new_value, actor=new_actor), {
-            **critic_info, **value_info, **actor_info
-        }
+        new_critic, critic_info = agent.critic.apply_loss_fn(
+            loss_fn=critic_loss_fn, has_aux=True
+        )
+        new_target_critic = target_update(
+            agent.critic, agent.target_critic, agent.config["target_update_rate"]
+        )
+        new_value, value_info = agent.value.apply_loss_fn(
+            loss_fn=value_loss_fn, has_aux=True
+        )
+        new_actor, actor_info = agent.actor.apply_loss_fn(
+            loss_fn=actor_loss_fn, has_aux=True
+        )
+
+        return agent.replace(
+            critic=new_critic,
+            target_critic=new_target_critic,
+            value=new_value,
+            actor=new_actor,
+        ), {**critic_info, **value_info, **actor_info}
 
     @jax.jit
-    def sample_actions(agent,
-                       observations: np.ndarray,
-                       *,
-                       seed: PRNGKey,
-                       temperature: float = 1.0) -> jnp.ndarray:
+    def sample_actions(
+        agent, observations: np.ndarray, *, seed: PRNGKey, temperature: float = 1.0
+    ) -> jnp.ndarray:
         actions = agent.actor(observations, temperature=temperature).sample(seed=seed)
         actions = jnp.clip(actions, -1, 1)
         return actions
 
+
 def create_learner(
-                 seed: int,
-                 observations: jnp.ndarray,
-                 actions: jnp.ndarray,
-                 actor_lr: float = 3e-4,
-                 value_lr: float = 3e-4,
-                 critic_lr: float = 3e-4,
-                 hidden_dims: Sequence[int] = (256, 256),
-                 discount: float = 0.99,
-                 tau: float = 0.005,
-                 expectile: float = 0.8,
-                 temperature: float = 0.1,
-                 dropout_rate: Optional[float] = None,
-                 max_steps: Optional[int] = None,
-                 opt_decay_schedule: str = "cosine",
-            **kwargs):
+    seed: int,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
+    actor_lr: float = 3e-4,
+    value_lr: float = 3e-4,
+    critic_lr: float = 3e-4,
+    hidden_dims: Sequence[int] = (256, 256),
+    discount: float = 0.99,
+    tau: float = 0.005,
+    expectile: float = 0.8,
+    temperature: float = 0.1,
+    dropout_rate: Optional[float] = None,
+    max_steps: Optional[int] = None,
+    opt_decay_schedule: str = "cosine",
+    **kwargs,
+):
 
-        print('Extra kwargs:', kwargs)
+    print("Extra kwargs:", kwargs)
 
-        rng = jax.random.PRNGKey(seed)
-        rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
+    rng = jax.random.PRNGKey(seed)
+    rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
 
-        action_dim = actions.shape[-1]
-        actor_def = Policy(hidden_dims, action_dim=action_dim, 
-            log_std_min=-5.0, state_dependent_std=False, tanh_squash_distribution=False)
+    action_dim = actions.shape[-1]
+    actor_def = Policy(
+        hidden_dims,
+        action_dim=action_dim,
+        log_std_min=-5.0,
+        state_dependent_std=False,
+        tanh_squash_distribution=False,
+    )
 
-        if opt_decay_schedule == "cosine":
-            schedule_fn = optax.cosine_decay_schedule(-actor_lr, max_steps)
-            actor_tx = optax.chain(optax.scale_by_adam(),
-                                    optax.scale_by_schedule(schedule_fn))
-        else:
-            actor_tx = optax.adam(learning_rate=actor_lr)
+    if opt_decay_schedule == "cosine":
+        schedule_fn = optax.cosine_decay_schedule(-actor_lr, max_steps)
+        actor_tx = optax.chain(
+            optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
+        )
+    else:
+        actor_tx = optax.adam(learning_rate=actor_lr)
 
-        actor_params = actor_def.init(actor_key, observations)['params']
-        actor = TrainState.create(actor_def, actor_params, tx=actor_tx)
+    actor_params = actor_def.init(actor_key, observations)["params"]
+    actor = TrainState.create(actor_def, actor_params, tx=actor_tx)
 
-        critic_def = ensemblize(Critic, num_qs=2)(hidden_dims)
-        critic_params = critic_def.init(critic_key, observations, actions)['params']
-        critic = TrainState.create(critic_def, critic_params, tx=optax.adam(learning_rate=critic_lr))
-        target_critic = TrainState.create(critic_def, critic_params)
+    critic_def = ensemblize(Critic, num_qs=2)(hidden_dims)
+    critic_params = critic_def.init(critic_key, observations, actions)["params"]
+    critic = TrainState.create(
+        critic_def, critic_params, tx=optax.adam(learning_rate=critic_lr)
+    )
+    target_critic = TrainState.create(critic_def, critic_params)
 
-        value_def = ValueCritic(hidden_dims)
-        value_params = value_def.init(value_key, observations)['params']
-        value = TrainState.create(value_def, value_params, tx=optax.adam(learning_rate=value_lr))
+    value_def = ValueCritic(hidden_dims)
+    value_params = value_def.init(value_key, observations)["params"]
+    value = TrainState.create(
+        value_def, value_params, tx=optax.adam(learning_rate=value_lr)
+    )
 
-        config = flax.core.FrozenDict(dict(
-            discount=discount, temperature=temperature, expectile=expectile, target_update_rate=tau, 
-        ))
+    config = flax.core.FrozenDict(
+        dict(
+            discount=discount,
+            temperature=temperature,
+            expectile=expectile,
+            target_update_rate=tau,
+        )
+    )
 
-        return IQLAgent(rng, critic=critic, target_critic=target_critic, value=value, actor=actor, config=config)
+    return IQLAgent(
+        rng,
+        critic=critic,
+        target_critic=target_critic,
+        value=value,
+        actor=actor,
+        config=config,
+    )
+
 
 def get_default_config():
     import ml_collections
 
-    config = ml_collections.ConfigDict({
-        'actor_lr': 3e-4,
-        'value_lr': 3e-4,
-        'critic_lr': 3e-4,
-        'hidden_dims': (256, 256),
-        'discount': 0.99,
-        'expectile': 0.7,
-        'temperature': 3.0,
-        'dropout_rate': ml_collections.config_dict.placeholder(float),
-        'tau': 0.005,
-    })
+    config = ml_collections.ConfigDict(
+        {
+            "actor_lr": 3e-4,
+            "value_lr": 3e-4,
+            "critic_lr": 3e-4,
+            "hidden_dims": (256, 256),
+            "discount": 0.99,
+            "expectile": 0.7,
+            "temperature": 3.0,
+            "dropout_rate": ml_collections.config_dict.placeholder(float),
+            "tau": 0.005,
+        }
+    )
     return config
 
 
@@ -994,35 +1045,38 @@ import d4rl
 import gym
 import numpy as np
 
+
 def make_env(env_name: str):
     env = gym.make(env_name)
     env = EpisodeMonitor(env)
     return env
 
-def get_dataset(env: gym.Env,
-                 clip_to_eps: bool = True,
-                 eps: float = 1e-5):
-        dataset = d4rl.qlearning_dataset(env)
 
-        if clip_to_eps:
-            lim = 1 - eps
-            dataset['actions'] = np.clip(dataset['actions'], -lim, lim)
+def get_dataset(env: gym.Env, clip_to_eps: bool = True, eps: float = 1e-5):
+    dataset = d4rl.qlearning_dataset(env)
 
-        imputed_next_observations = np.roll(dataset['observations'], -1, axis=0)
-        same_obs = np.all(np.isclose(imputed_next_observations, dataset['next_observations'], atol=1e-5), axis=-1)
-        dones_float = 1.0 - same_obs.astype(np.float32)
-        dones_float[-1] = 1
-        
-        dataset = {
-            'observations': dataset['observations'],
-            'actions': dataset['actions'],
-            'rewards': dataset['rewards'],
-            'masks': 1.0 - dataset['terminals'],
-            'dones_float': dones_float,
-            'next_observations': dataset['next_observations'],
-        }
-        dataset = {k: v.astype(np.float32) for k, v in dataset.items()}
-        return Dataset(dataset)
+    if clip_to_eps:
+        lim = 1 - eps
+        dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
+
+    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
+    same_obs = np.all(
+        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
+        axis=-1,
+    )
+    dones_float = 1.0 - same_obs.astype(np.float32)
+    dones_float[-1] = 1
+
+    dataset = {
+        "observations": dataset["observations"],
+        "actions": dataset["actions"],
+        "rewards": dataset["rewards"],
+        "masks": 1.0 - dataset["terminals"],
+        "dones_float": dones_float,
+        "next_observations": dataset["next_observations"],
+    }
+    dataset = {k: v.astype(np.float32) for k, v in dataset.items()}
+    return Dataset(dataset)
 
 
 import os
@@ -1039,38 +1093,41 @@ import pickle
 
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string('env_name', 'hopper-medium-expert-v2', 'Environment name.')
+flags.DEFINE_string("env_name", "hopper-medium-expert-v2", "Environment name.")
 
-flags.DEFINE_string('save_dir', None, 'Logging dir (if not None, save params).')
+flags.DEFINE_string("save_dir", None, "Logging dir (if not None, save params).")
 
-flags.DEFINE_integer('seed', np.random.choice(1000000), 'Random seed.')
-flags.DEFINE_integer('eval_episodes', 10,
-                     'Number of episodes used for evaluation.')
-flags.DEFINE_integer('log_interval', 100000, 'Logging interval.')
-flags.DEFINE_integer('eval_interval', 100000, 'Eval interval.')
-flags.DEFINE_integer('save_interval', 25000, 'Eval interval.')
-flags.DEFINE_integer('batch_size', 256, 'Mini batch size.')
-flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
+flags.DEFINE_integer("seed", np.random.choice(1000000), "Random seed.")
+flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
+flags.DEFINE_integer("log_interval", 100000, "Logging interval.")
+flags.DEFINE_integer("eval_interval", 100000, "Eval interval.")
+flags.DEFINE_integer("save_interval", 25000, "Eval interval.")
+flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
+flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
 
 wandb_config = default_wandb_config()
-wandb_config.update({
-    'project': 'd4rl_test',
-    'group': 'iql_test',
-    'name': 'iql_{env_name}',
-})
+wandb_config.update(
+    {
+        "project": "d4rl_test",
+        "group": "iql_test",
+        "name": "iql_{env_name}",
+    }
+)
 
-config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
-config_flags.DEFINE_config_dict('config', get_default_config(), lock_config=False)
+config_flags.DEFINE_config_dict("wandb", wandb_config, lock_config=False)
+config_flags.DEFINE_config_dict("config", get_default_config(), lock_config=False)
+
 
 def get_normalization(dataset):
-        returns = []
-        ret = 0
-        for r, term in zip(dataset['rewards'], dataset['dones_float']):
-            ret += r
-            if term:
-                returns.append(ret)
-                ret = 0
-        return (max(returns) - min(returns)) / 1000
+    returns = []
+    ret = 0
+    for r, term in zip(dataset["rewards"], dataset["dones_float"]):
+        ret += r
+        if term:
+            returns.append(ret)
+            ret = 0
+    return (max(returns) - min(returns)) / 1000
+
 
 def main(_):
 
@@ -1078,34 +1135,41 @@ def main(_):
     setup_wandb(FLAGS.config.to_dict(), **FLAGS.wandb)
 
     if FLAGS.save_dir is not None:
-        FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, wandb.config.exp_prefix, wandb.config.experiment_id)
+        FLAGS.save_dir = os.path.join(
+            FLAGS.save_dir,
+            wandb.run.project,
+            wandb.config.exp_prefix,
+            wandb.config.experiment_id,
+        )
         os.makedirs(FLAGS.save_dir, exist_ok=True)
-        print(f'Saving config to {FLAGS.save_dir}/config.pkl')
-        with open(os.path.join(FLAGS.save_dir, 'config.pkl'), 'wb') as f:
+        print(f"Saving config to {FLAGS.save_dir}/config.pkl")
+        with open(os.path.join(FLAGS.save_dir, "config.pkl"), "wb") as f:
             pickle.dump(get_flag_dict(), f)
-    
+
     env = make_env(FLAGS.env_name)
     dataset = get_dataset(env)
 
     normalizing_factor = get_normalization(dataset)
-    dataset = dataset.copy({'rewards': dataset['rewards'] / normalizing_factor})
+    dataset = dataset.copy({"rewards": dataset["rewards"] / normalizing_factor})
 
     example_batch = dataset.sample(1)
-    agent = create_learner(FLAGS.seed,
-                    example_batch['observations'],
-                    example_batch['actions'],
-                    max_steps=FLAGS.max_steps,
-                    **FLAGS.config)
-    
-    for i in tqdm.tqdm(range(1, FLAGS.max_steps + 1),
-                       smoothing=0.1,
-                       dynamic_ncols=True):
+    agent = create_learner(
+        FLAGS.seed,
+        example_batch["observations"],
+        example_batch["actions"],
+        max_steps=FLAGS.max_steps,
+        **FLAGS.config,
+    )
 
-        batch = dataset.sample(FLAGS.batch_size)  
+    for i in tqdm.tqdm(
+        range(1, FLAGS.max_steps + 1), smoothing=0.1, dynamic_ncols=True
+    ):
+
+        batch = dataset.sample(FLAGS.batch_size)
         agent, update_info = agent.update(batch)
 
         if i % FLAGS.log_interval == 0:
-            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
+            train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
 
         if i % FLAGS.eval_interval == 0:
@@ -1113,12 +1177,13 @@ def main(_):
             eval_info = evaluate(policy_fn, env, num_episodes=FLAGS.eval_episodes)
             print(i, eval_info["episode.normalized_return"])
 
-            eval_metrics = {f'evaluation/{k}': v for k, v in eval_info.items()}
+            eval_metrics = {f"evaluation/{k}": v for k, v in eval_info.items()}
             wandb.log(eval_metrics, step=i)
 
         if i % FLAGS.save_interval == 0 and FLAGS.save_dir is not None:
             pass
             # TODO save agent
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     app.run(main)
