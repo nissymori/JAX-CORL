@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union, NamedT
 import numpy as np
 import jax.numpy as jnp
 import flax
+from functools import partial
 
 PRNGKey = Any
 Params = flax.core.FrozenDict[str, Any]
@@ -681,6 +682,21 @@ class IQLAgent(flax.struct.PyTreeNode):
         actions = agent.actor(observations, temperature=temperature).sample(seed=seed)
         actions = jnp.clip(actions, -1, 1)
         return actions
+    
+    @partial(jax.jit, static_argnums=(3, 4))
+    def sample_batch_and_update_n_times(
+        agent,
+        dataset: Transition,
+        rng: PRNGKey,
+        batch_size: int,
+        n_updates: int,
+    ):
+        for _ in range(n_updates):
+            rng, subkey = jax.random.split(rng)
+            batch_indices = jax.random.randint(subkey, (batch_size,), 0, len(dataset.observations))
+            batch = jax.tree_map(lambda x: x[batch_indices], dataset)
+            agent, info = agent.update(batch)
+        return agent, info
 
 def create_learner(
                  seed: int,
@@ -810,6 +826,7 @@ flags.DEFINE_integer('eval_interval', 100000, 'Eval interval.')
 flags.DEFINE_integer('save_interval', 25000, 'Eval interval.')
 flags.DEFINE_integer('batch_size', 256, 'Mini batch size.')
 flags.DEFINE_integer('max_steps', int(1e6), 'Number of training steps.')
+flags.DEFINE_integer('n_updates', 8, 'Number of updates per step.')
 
 config_flags.DEFINE_config_dict('config', get_default_config(), lock_config=False)
 
@@ -846,14 +863,12 @@ def main(_):
                     **FLAGS.config)
     # into jnp.ndarray
     dataset = jax.tree_map(lambda x: jnp.asarray(x), dataset) 
-    for i in tqdm.tqdm(range(1, FLAGS.max_steps + 1),
+    num_steps = FLAGS.max_steps // FLAGS.n_updates 
+    for i in tqdm.tqdm(range(1, num_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        batch_indices = jax.random.randint(subkey, (FLAGS.batch_size,), 0, len(dataset.observations))
-
-        batch: Transition = jax.tree_map(lambda x: x[batch_indices], dataset)
-        agent, update_info = agent.update(batch)
+        agent, update_info = agent.sample_batch_and_update_n_times(dataset, subkey, FLAGS.batch_size, FLAGS.n_updates)
 
         if i % FLAGS.log_interval == 0:
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
