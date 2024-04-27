@@ -77,7 +77,9 @@ class Critic(nn.Module):
     @nn.compact
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP((*self.hidden_dims, 1), activations=self.activations, add_layer_norm=True)(inputs)
+        critic = MLP(
+            (*self.hidden_dims, 1), activations=self.activations, add_layer_norm=True
+        )(inputs)
         return jnp.squeeze(critic, -1)
 
 
@@ -203,8 +205,8 @@ def expectile_loss(diff, expectile=0.8):
 
 
 def target_update(
-    model: "TrainState", target_model: "TrainState", tau: float
-) -> "TrainState":
+    model: TrainState, target_model: TrainState, tau: float
+) -> TrainState:
     new_target_params = jax.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
     )
