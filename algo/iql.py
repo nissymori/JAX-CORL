@@ -3,69 +3,49 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 import flax
+from flax.training.train_state import TrainState
 from functools import partial
 import wandb
 import flax.linen as nn
 import optax
-import functools
 import gym
 from collections import defaultdict
 import time
 import distrax
 import d4rl
-import os
 from absl import app, flags
-from functools import partial
 import tqdm
 from ml_collections import config_flags
-import pickle
+from omegaconf import OmegaConf
+from pydantic import BaseModel
 
-PRNGKey = Any
 Params = flax.core.FrozenDict[str, Any]
-PRNGKey = Any
-Shape = Sequence[int]
-Dtype = Any  # this could be a real type?
-InfoDict = Dict[str, float]
-Array = Union[np.ndarray, jnp.ndarray]
-Data = Union[Array, Dict[str, "Data"]]
-Batch = Dict[str, Data]
-ModuleMethod = Union[
-    str, Callable, None
-]  # A method to be passed into TrainState.__call__
 
 
-nonpytree_field = functools.partial(flax.struct.field, pytree_node=False)
+class IQLConfig(BaseModel):
+    # GENERAL
+    env_name: str = "hopper-medium-expert-v2"
+    seed: int = np.random.choice(1000000)
+    eval_episodes: int = 10
+    log_interval: int = 100000
+    eval_interval: int = 10000
+    save_interval: int = 25000
+    batch_size: int = 256
+    max_steps: int = int(1e6)
+    n_updates: int = 8
+    # FOR TRAINING
+    actor_lr: float = 3e-4
+    value_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    hidden_dims: Tuple[int, int] = (256, 256)
+    discount: float = 0.99
+    expectile: float = 0.7
+    temperature: float = 3.0
+    tau: float = 0.005
 
 
-def target_update(
-    model: "TrainState", target_model: "TrainState", tau: float
-) -> "TrainState":
-    new_target_params = jax.tree_map(
-        lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
-    )
-    return target_model.replace(params=new_target_params)
-
-
-class Transition(NamedTuple):
-    observations: jnp.ndarray
-    actions: jnp.ndarray
-    rewards: jnp.ndarray
-    masks: jnp.ndarray
-    dones_float: jnp.ndarray
-    next_observations: jnp.ndarray
-
-
-def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
-    episode_returns = []
-    for _ in range(num_episodes):
-        episode_return = 0
-        observation, done = env.reset(), False
-        while not done:
-            action = policy_fn(observation)
-            observation, rew, done, info = env.step(action)
-            episode_return += rew
-        episode_returns.append(episode_return)
-    return env.get_normalized_score(np.mean(episode_returns)) * 100
+conf_dict = OmegaConf.from_cli()
+config = IQLConfig(**conf_dict)
 
 
 def default_init(scale: Optional[float] = 1.0):
@@ -76,7 +56,7 @@ class MLP(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: int = False
-    kernel_init: Callable[[PRNGKey, Shape, Dtype], Array] = default_init()
+    kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
 
     def setup(self):
         self.layers = [
@@ -178,28 +158,76 @@ class TransformedWithMode(distrax.Transformed):
         return self.bijector.forward(self.distribution.mode())
 
 
+class Transition(NamedTuple):
+    observations: jnp.ndarray
+    actions: jnp.ndarray
+    rewards: jnp.ndarray
+    masks: jnp.ndarray
+    dones_float: jnp.ndarray
+    next_observations: jnp.ndarray
+
+
+def get_dataset(
+    env: gym.Env, clip_to_eps: bool = True, eps: float = 1e-5
+) -> Transition:
+    dataset = d4rl.qlearning_dataset(env)
+
+    if clip_to_eps:
+        lim = 1 - eps
+        dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
+
+    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
+    same_obs = np.all(
+        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
+        axis=-1,
+    )
+    dones_float = 1.0 - same_obs.astype(np.float32)
+    dones_float[-1] = 1
+
+    dataset = Transition(
+        observations=jnp.array(dataset["observations"], dtype=jnp.float32),
+        actions=jnp.array(dataset["actions"], dtype=jnp.float32),
+        rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
+        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
+        dones_float=jnp.array(dones_float, dtype=jnp.float32),
+        next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
+    )
+    return dataset
+
+
 def expectile_loss(diff, expectile=0.8):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
 
-def update_by_loss_grad(train_state: TrainState, batch: Transition, loss_fn: Callable) -> Tuple[float, Params]:
+def target_update(
+    model: "TrainState", target_model: "TrainState", tau: float
+) -> "TrainState":
+    new_target_params = jax.tree_map(
+        lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
+    )
+    return target_model.replace(params=new_target_params)
+
+
+def update_by_loss_grad(
+    train_state: TrainState, loss_fn: Callable
+) -> Tuple[float, Params]:
     grad_fn = jax.value_and_grad(loss_fn)
-    loss, grad = grad_fn(model.params, batch)
+    loss, grad = grad_fn(train_state.params)
     new_train_state = train_state.apply_gradients(grads=grad)
     return new_train_state, loss
 
 
-class IQLAgent(flax.struct.PyTreeNode):
-    rng: PRNGKey
+class IQLAgent(NamedTuple):
+    rng: jax.random.PRNGKey
     critic: TrainState
     target_critic: TrainState
     value: TrainState
     actor: TrainState
-    config: dict = flax.struct.field(pytree_node=False)
+    config: IQLConfig
 
     @jax.jit
-    def update(agent, batch: Transition) -> InfoDict:
+    def update(agent, batch: Transition) -> Tuple["IQLAgent", Dict]:
         def critic_loss_fn(critic_params):
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
@@ -232,14 +260,14 @@ class IQLAgent(flax.struct.PyTreeNode):
             actor_loss = -(exp_a * log_probs).mean()
             return actor_loss
 
-        new_critic = update_by_loss_grad(agent.critic, batch, critic_loss_fn)
+        new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
         new_target_critic = target_update(
             agent.critic, agent.target_critic, agent.config["target_update_rate"]
         )
-        new_value = update_by_loss_grad(agent.value, batch, value_loss_fn)
-        new_actor = update_by_loss_grad(agent.actor, batch, actor_loss_fn)
+        new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
+        new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
         return (
-            agent.replace(
+            agent._replace(
                 critic=new_critic,
                 target_critic=new_target_critic,
                 value=new_value,
@@ -248,21 +276,11 @@ class IQLAgent(flax.struct.PyTreeNode):
             {},
         )
 
-    @jax.jit
-    def sample_actions(
-        agent, observations: np.ndarray, *, seed: PRNGKey, temperature: float = 1.0
-    ) -> jnp.ndarray:
-        actions = agent.actor.apply_fn(
-            agent.actor.params, observations, temperature=temperature
-        ).sample(seed=seed)
-        actions = jnp.clip(actions, -1, 1)
-        return actions
-
     @partial(jax.jit, static_argnums=(3, 4))
-    def sample_batch_and_update_n_times(
+    def update_n_times(
         agent,
         dataset: Transition,
-        rng: PRNGKey,
+        rng: jax.random.PRNGKey,
         batch_size: int,
         n_updates: int,
     ):
@@ -275,20 +293,26 @@ class IQLAgent(flax.struct.PyTreeNode):
             agent, info = agent.update(batch)
         return agent, info
 
+    @jax.jit
+    def sample_actions(
+        agent,
+        observations: np.ndarray,
+        *,
+        seed: jax.random.PRNGKey,
+        temperature: float = 1.0,
+    ) -> jnp.ndarray:
+        actions = agent.actor.apply_fn(
+            agent.actor.params, observations, temperature=temperature
+        ).sample(seed=seed)
+        actions = jnp.clip(actions, -1, 1)
+        return actions
+
 
 def create_learner(
     seed: int,
     observations: jnp.ndarray,
     actions: jnp.ndarray,
-    actor_lr: float = 3e-4,
-    value_lr: float = 3e-4,
-    critic_lr: float = 3e-4,
-    hidden_dims: Sequence[int] = (256, 256),
-    discount: float = 0.99,
-    tau: float = 0.005,
-    expectile: float = 0.8,
-    temperature: float = 0.1,
-    dropout_rate: Optional[float] = None,
+    config: IQLConfig,
     max_steps: Optional[int] = None,
     opt_decay_schedule: str = "cosine",
     **kwargs,
@@ -301,7 +325,7 @@ def create_learner(
 
     action_dim = actions.shape[-1]
     actor_def = Policy(
-        hidden_dims,
+        config.hidden_dims,
         action_dim=action_dim,
         log_std_min=-5.0,
         state_dependent_std=False,
@@ -309,48 +333,47 @@ def create_learner(
     )
 
     if opt_decay_schedule == "cosine":
-        schedule_fn = optax.cosine_decay_schedule(-actor_lr, max_steps)
+        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, max_steps)
         actor_tx = optax.chain(
             optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
         )
     else:
-        actor_tx = optax.adam(learning_rate=actor_lr)
+        actor_tx = optax.adam(learning_rate=config.actor_lr)
 
     actor_params = actor_def.init(actor_key, observations)
     actor = TrainState.create(
         apply_fn=actor_def.apply, params=actor_params, tx=actor_tx
     )
 
-    critic_def = ensemblize(Critic, num_qs=2)(hidden_dims)
+    critic_def = ensemblize(Critic, num_qs=2)(config.hidden_dims)
     critic_params = critic_def.init(critic_key, observations, actions)
     critic = TrainState.create(
         apply_fn=critic_def.apply,
         params=critic_params,
-        tx=optax.adam(learning_rate=critic_lr),
+        tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
         apply_fn=critic_def.apply,
         params=critic_params,
-        tx=optax.adam(learning_rate=critic_lr),
+        tx=optax.adam(learning_rate=config.critic_lr),
     )
 
-    value_def = ValueCritic(hidden_dims)
+    value_def = ValueCritic(config.hidden_dims)
     value_params = value_def.init(value_key, observations)
     value = TrainState.create(
         apply_fn=value_def.apply,
         params=value_params,
-        tx=optax.adam(learning_rate=value_lr),
+        tx=optax.adam(learning_rate=config.value_lr),
     )
 
     config = flax.core.FrozenDict(
         dict(
-            discount=discount,
-            temperature=temperature,
-            expectile=expectile,
-            target_update_rate=tau,
+            discount=config.discount,
+            temperature=config.temperature,
+            expectile=config.expectile,
+            target_update_rate=config.tau,
         )
-    )
-
+    )  # make sure config is immutable
     return IQLAgent(
         rng,
         critic=critic,
@@ -361,71 +384,17 @@ def create_learner(
     )
 
 
-def get_default_config():
-    import ml_collections
-
-    config = ml_collections.ConfigDict(
-        {
-            "actor_lr": 3e-4,
-            "value_lr": 3e-4,
-            "critic_lr": 3e-4,
-            "hidden_dims": (256, 256),
-            "discount": 0.99,
-            "expectile": 0.7,
-            "temperature": 3.0,
-            "dropout_rate": ml_collections.config_dict.placeholder(float),
-            "tau": 0.005,
-        }
-    )
-    return config
-
-
-def make_env(env_name: str):
-    env = gym.make(env_name)
-    return env
-
-
-def get_dataset(
-    env: gym.Env, clip_to_eps: bool = True, eps: float = 1e-5
-) -> Transition:
-    dataset = d4rl.qlearning_dataset(env)
-
-    if clip_to_eps:
-        lim = 1 - eps
-        dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
-
-    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
-    same_obs = np.all(
-        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
-        axis=-1,
-    )
-    dones_float = 1.0 - same_obs.astype(np.float32)
-    dones_float[-1] = 1
-
-    dataset = Transition(
-        observations=jnp.array(dataset["observations"], dtype=jnp.float32),
-        actions=jnp.array(dataset["actions"], dtype=jnp.float32),
-        rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
-        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
-        dones_float=jnp.array(dones_float, dtype=jnp.float32),
-        next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
-    )
-    return dataset
-
-
-FLAGS = flags.FLAGS
-flags.DEFINE_string("env_name", "halfcheetah-medium-expert-v2", "Environment name.")
-flags.DEFINE_string("save_dir", None, "Logging dir (if not None, save params).")
-flags.DEFINE_integer("seed", np.random.choice(1000000), "Random seed.")
-flags.DEFINE_integer("eval_episodes", 10, "Number of episodes used for evaluation.")
-flags.DEFINE_integer("log_interval", 100000, "Logging interval.")
-flags.DEFINE_integer("eval_interval", 10000, "Eval interval.")
-flags.DEFINE_integer("save_interval", 25000, "Eval interval.")
-flags.DEFINE_integer("batch_size", 256, "Mini batch size.")
-flags.DEFINE_integer("max_steps", int(1e6), "Number of training steps.")
-flags.DEFINE_integer("n_updates", 8, "Number of updates per step.")
-
-config_flags.DEFINE_config_dict("config", get_default_config(), lock_config=False)
+def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
+    episode_returns = []
+    for _ in range(num_episodes):
+        episode_return = 0
+        observation, done = env.reset(), False
+        while not done:
+            action = policy_fn(observation)
+            observation, rew, done, info = env.step(action)
+            episode_return += rew
+        episode_returns.append(episode_return)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
 def get_normalization(dataset: Transition):
@@ -441,14 +410,10 @@ def get_normalization(dataset: Transition):
     return (max(returns) - min(returns)) / 1000
 
 
-def main(_):
-    wandb.init(config=FLAGS.config, project="iql")
-    rng = jax.random.PRNGKey(FLAGS.seed)
-    if FLAGS.save_dir is not None:
-        pass
-        # TODO save config
-
-    env = make_env(FLAGS.env_name)
+if __name__ == "__main__":
+    wandb.init(config=config, project="iql")
+    rng = jax.random.PRNGKey(config.seed)
+    env = gym.make(config.env_name)
     dataset: Transition = get_dataset(env)
 
     normalizing_factor = get_normalization(dataset)
@@ -456,40 +421,32 @@ def main(_):
 
     example_batch = jax.tree_map(lambda x: x[0], dataset)
     agent = create_learner(
-        FLAGS.seed,
+        config.seed,
         example_batch.observations,
         example_batch.actions,
-        max_steps=FLAGS.max_steps,
-        **FLAGS.config,
+        config,
+        max_steps=config.max_steps,
     )
+
     # into jnp.ndarray
     dataset = jax.tree_map(lambda x: jnp.asarray(x), dataset)
-    num_steps = FLAGS.max_steps // FLAGS.n_updates
+    num_steps = config.max_steps // config.n_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        agent, update_info = agent.sample_batch_and_update_n_times(
-            dataset, subkey, FLAGS.batch_size, FLAGS.n_updates
+        agent, update_info = agent.update_n_times(
+            dataset, subkey, config.batch_size, config.n_updates
         )
-
-        if i % FLAGS.log_interval == 0:
+        if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
 
-        if i % FLAGS.eval_interval == 0:
+        if i % config.eval_interval == 0:
             policy_fn = partial(
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
             normalized_score = evaluate(
-                policy_fn, env, num_episodes=FLAGS.eval_episodes
+                policy_fn, env, num_episodes=config.eval_episodes
             )
             print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
-
-        if i % FLAGS.save_interval == 0 and FLAGS.save_dir is not None:
-            pass
-            # TODO save agent
-
-
-if __name__ == "__main__":
-    app.run(main)
