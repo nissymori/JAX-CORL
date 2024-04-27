@@ -22,6 +22,7 @@ class IQLConfig(BaseModel):
     # GENERAL
     env_name: str = "hopper-medium-expert-v2"
     seed: int = np.random.choice(1000000)
+    data_size: int = int(1e6)
     eval_episodes: int = 10
     log_interval: int = 100000
     eval_interval: int = 10000
@@ -35,8 +36,8 @@ class IQLConfig(BaseModel):
     critic_lr: float = 3e-4
     hidden_dims: Tuple[int, int] = (256, 256)
     discount: float = 0.99
-    expectile: float = 0.7
-    temperature: float = 3.0
+    expectile: float = 0.7  # for Hopper 0.5
+    temperature: float = 3.0  # for Hopper 6.0
     tau: float = 0.005
 
 
@@ -51,14 +52,16 @@ def default_init(scale: Optional[float] = 1.0):
 class MLP(nn.Module):
     hidden_dims: Sequence[int]
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
-    activate_final: int = False
+    activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
+    add_layer_norm: bool = False
 
     def setup(self):
         self.layers = [
             nn.Dense(size, kernel_init=self.kernel_init) for size in self.hidden_dims
         ]
 
+    @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         for i, layer in enumerate(self.layers):
             x = layer(x)
@@ -74,7 +77,7 @@ class Critic(nn.Module):
     @nn.compact
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP((*self.hidden_dims, 1), activations=self.activations)(inputs)
+        critic = MLP((*self.hidden_dims, 1), activations=self.activations, add_layer_norm=True)(inputs)
         return jnp.squeeze(critic, -1)
 
 
@@ -99,7 +102,7 @@ class ValueCritic(nn.Module):
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        critic = MLP((*self.hidden_dims, 1))(observations)
+        critic = MLP((*self.hidden_dims, 1), add_layer_norm=True)(observations)
         return jnp.squeeze(critic, -1)
 
 
@@ -159,7 +162,7 @@ class Transition(NamedTuple):
 
 
 def get_dataset(
-    env: gym.Env, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -183,6 +186,14 @@ def get_dataset(
         dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
+
+    # shuffle data and select the first data_size samples
+    rng = jax.random.PRNGKey(config.seed)
+    rng, rng_permute, rng_select = jax.random.split(rng, 3)
+    perm = jax.random.permutation(rng_permute, len(dataset.observations))
+    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    assert len(dataset.observations) >= config.data_size
+    dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
     return dataset
 
 
@@ -398,7 +409,7 @@ if __name__ == "__main__":
     wandb.init(config=config, project="iql")
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset: Transition = get_dataset(env)
+    dataset: Transition = get_dataset(env, config)
 
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
