@@ -183,7 +183,11 @@ def expectile_loss(diff, expectile=0.8):
     return weight * (diff**2)
 
 
-from flax.training.train_state import TrainState
+def update_by_loss_grad(train_state: TrainState, batch: Transition, loss_fn: Callable) -> Tuple[float, Params]:
+    grad_fn = jax.value_and_grad(loss_fn)
+    loss, grad = grad_fn(model.params, batch)
+    new_train_state = train_state.apply_gradients(grads=grad)
+    return new_train_state, loss
 
 
 class IQLAgent(flax.struct.PyTreeNode):
@@ -228,22 +232,12 @@ class IQLAgent(flax.struct.PyTreeNode):
             actor_loss = -(exp_a * log_probs).mean()
             return actor_loss
 
-        critic_grad_fn = jax.value_and_grad(critic_loss_fn)
-        critic_loss, critic_grad = critic_grad_fn(agent.critic.params)
-        new_critic = agent.critic.apply_gradients(grads=critic_grad)
-
+        new_critic = update_by_loss_grad(agent.critic, batch, critic_loss_fn)
         new_target_critic = target_update(
             agent.critic, agent.target_critic, agent.config["target_update_rate"]
         )
-
-        value_grad_fn = jax.value_and_grad(value_loss_fn)
-        value_loss, value_grad = value_grad_fn(agent.value.params)
-        new_value = agent.value.apply_gradients(grads=value_grad)
-
-        actor_grad_fn = jax.value_and_grad(actor_loss_fn)
-        actor_loss, actor_grad = actor_grad_fn(agent.actor.params)
-        new_actor = agent.actor.apply_gradients(grads=actor_grad)
-
+        new_value = update_by_loss_grad(agent.value, batch, value_loss_fn)
+        new_actor = update_by_loss_grad(agent.actor, batch, actor_loss_fn)
         return (
             agent.replace(
                 critic=new_critic,
