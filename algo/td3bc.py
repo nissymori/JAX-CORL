@@ -20,8 +20,7 @@ from tqdm import tqdm
 
 class TD3BCConfig(BaseModel):
     # general config
-    env_name: str = "hopper"
-    data_quality: str = "medium-expert"
+    env_name: str = "hopper-medium-expert-v2"
     total_updates: int = 1000000
     updates_per_epoch: int = (
         16  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
@@ -360,7 +359,7 @@ def evaluate(
 
 if __name__ == "__main__":
     # setup environemnt, inthis case, D4RL. Please change to your own environment
-    env = gym.make(f"{config.env_name}-{config.data_quality}-v2")
+    env = gym.make(config.env_name)
     dataset = d4rl.qlearning_dataset(env)
     observation_dim = dataset["observations"].shape[-1]
     action_dim = env.action_space.shape[0]
