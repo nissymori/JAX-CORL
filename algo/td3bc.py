@@ -157,7 +157,7 @@ class Transitions(NamedTuple):
     dones: jnp.ndarray
 
 
-def initialize_data(
+def get_dataset(
     dataset: dict, rng: jax.random.PRNGKey
 ) -> Tuple[Transitions, np.ndarray, np.ndarray]:
     """
@@ -369,7 +369,7 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     rng, data_rng, model_rng = jax.random.split(rng, 3)
     # initialize data and update state
-    data, obs_mean, obs_std = initialize_data(dataset, data_rng)
+    data, obs_mean, obs_std = get_dataset(dataset, data_rng)
     update_state = initialize_update_state(
         observation_dim, action_dim, max_action, model_rng
     )
