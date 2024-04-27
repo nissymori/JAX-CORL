@@ -33,7 +33,7 @@ class IQLConfig(BaseModel):
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
-    # FOR TRAINING
+    # TRAINING
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
@@ -218,13 +218,13 @@ def update_by_loss_grad(
     return new_train_state, loss
 
 
-class IQLAgent(NamedTuple):
+class IQLTrainer(NamedTuple):
     rng: jax.random.PRNGKey
     critic: TrainState
     target_critic: TrainState
     value: TrainState
     actor: TrainState
-    config: IQLConfig
+    config: flax.core.FrozenDict
 
     @jax.jit
     def update(agent, batch: Transition) -> Tuple["IQLAgent", Dict]:
@@ -308,7 +308,7 @@ class IQLAgent(NamedTuple):
         return actions
 
 
-def create_learner(
+def create_trainer(
     seed: int,
     observations: jnp.ndarray,
     actions: jnp.ndarray,
@@ -316,7 +316,7 @@ def create_learner(
     max_steps: Optional[int] = None,
     opt_decay_schedule: str = "cosine",
     **kwargs,
-):
+) -> IQLTrainer:
 
     print("Extra kwargs:", kwargs)
 
@@ -398,7 +398,7 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
 
 
 def get_normalization(dataset: Transition):
-    # into_numpy
+    # into numpy.ndarray
     dataset = jax.tree_map(lambda x: np.array(x), dataset)
     returns = []
     ret = 0
@@ -419,8 +419,8 @@ if __name__ == "__main__":
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
 
-    example_batch = jax.tree_map(lambda x: x[0], dataset)
-    agent = create_learner(
+    example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
+    agent: IQLTrainer = create_learner(
         config.seed,
         example_batch.observations,
         example_batch.actions,
