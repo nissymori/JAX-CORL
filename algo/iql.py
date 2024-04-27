@@ -3,19 +3,15 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 import flax
+import flax.linen as nn
 from flax.training.train_state import TrainState
+import optax
 from functools import partial
 import wandb
-import flax.linen as nn
-import optax
 import gym
-from collections import defaultdict
-import time
 import distrax
 import d4rl
-from absl import app, flags
 import tqdm
-from ml_collections import config_flags
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -84,12 +80,7 @@ class Critic(nn.Module):
 
 def ensemblize(cls, num_qs, out_axes=0, **kwargs):
     """
-    Useful for making ensembles of Q functions (e.g. double Q in SAC).
-
-    Usage:
-
-        critic_def = ensemblize(Critic, 2)(hidden_dims=hidden_dims)
-
+    Ensemblize a module by creating `num_qs` instances of the module
     """
     split_rngs = kwargs.pop("split_rngs", {})
     return nn.vmap(
@@ -226,8 +217,7 @@ class IQLTrainer(NamedTuple):
     actor: TrainState
     config: flax.core.FrozenDict
 
-    @jax.jit
-    def update(agent, batch: Transition) -> Tuple["IQLAgent", Dict]:
+    def update(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def critic_loss_fn(critic_params):
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
@@ -309,20 +299,14 @@ class IQLTrainer(NamedTuple):
 
 
 def create_trainer(
-    seed: int,
     observations: jnp.ndarray,
     actions: jnp.ndarray,
     config: IQLConfig,
-    max_steps: Optional[int] = None,
     opt_decay_schedule: str = "cosine",
-    **kwargs,
 ) -> IQLTrainer:
-
-    print("Extra kwargs:", kwargs)
-
-    rng = jax.random.PRNGKey(seed)
+    rng = jax.random.PRNGKey(config.seed)
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
-
+    # initialize actor
     action_dim = actions.shape[-1]
     actor_def = Policy(
         config.hidden_dims,
@@ -333,7 +317,7 @@ def create_trainer(
     )
 
     if opt_decay_schedule == "cosine":
-        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, max_steps)
+        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
         actor_tx = optax.chain(
             optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
         )
@@ -344,7 +328,7 @@ def create_trainer(
     actor = TrainState.create(
         apply_fn=actor_def.apply, params=actor_params, tx=actor_tx
     )
-
+    # initialize critic
     critic_def = ensemblize(Critic, num_qs=2)(config.hidden_dims)
     critic_params = critic_def.init(critic_key, observations, actions)
     critic = TrainState.create(
@@ -357,7 +341,7 @@ def create_trainer(
         params=critic_params,
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-
+    # initialize value
     value_def = ValueCritic(config.hidden_dims)
     value_params = value_def.init(value_key, observations)
     value = TrainState.create(
@@ -365,7 +349,7 @@ def create_trainer(
         params=value_params,
         tx=optax.adam(learning_rate=config.value_lr),
     )
-
+    # create immutable config for IQL.
     config = flax.core.FrozenDict(
         dict(
             discount=config.discount,
@@ -374,7 +358,7 @@ def create_trainer(
             target_update_rate=config.tau,
         )
     )  # make sure config is immutable
-    return IQLAgent(
+    return IQLTrainer(
         rng,
         critic=critic,
         target_critic=target_critic,
@@ -384,7 +368,7 @@ def create_trainer(
     )
 
 
-def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> Dict[str, float]:
+def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
@@ -420,16 +404,12 @@ if __name__ == "__main__":
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
 
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
-    agent: IQLTrainer = create_learner(
-        config.seed,
+    agent: IQLTrainer = create_trainer(
         example_batch.observations,
         example_batch.actions,
         config,
-        max_steps=config.max_steps,
     )
 
-    # into jnp.ndarray
-    dataset = jax.tree_map(lambda x: jnp.asarray(x), dataset)
     num_steps = config.max_steps // config.n_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
