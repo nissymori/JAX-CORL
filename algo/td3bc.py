@@ -63,7 +63,7 @@ class DoubleCritic(nn.Module):
         x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(sa)
         x_q = nn.LayerNorm()(x_q)
         x_q = nn.relu(x_q)
-        for i in range(config.num_hidden_layers):
+        for i in range(1, config.num_hidden_layers):
             x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_q)
             x_q = nn.LayerNorm()(x_q)
             x_q = nn.relu(x_q)
@@ -72,7 +72,7 @@ class DoubleCritic(nn.Module):
         x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(sa)
         x_q = nn.LayerNorm()(x_q)
         x_q = nn.relu(x_q)
-        for i in range(config.num_hidden_layers):
+        for i in range(1, config.num_hidden_layers):
             x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_q)
             x_q = nn.LayerNorm()(x_q)
             x_q = nn.relu(x_q)
