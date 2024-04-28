@@ -7,6 +7,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 # Algorithms
 | Algorithm | implementation | wandb report |
 |---|---|---|
+|AWAC|   |   |
 |CQL|   |   |  
 |IQL|  [algo/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/iql.py)   |   |  
 |TD3-BC| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |   |
