@@ -52,10 +52,9 @@ def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
 
 
-class DoubleCritic(nn.Module):
-    """
-    For twin Q networks
-    """
+class DoubleCritic(nn.Module):  # TODO use MLP class ?
+    num_hidden_units: int = 256
+    num_hidden_layers: int = 2
 
     @nn.compact
     def __call__(self, state, action, rng):
@@ -80,9 +79,11 @@ class DoubleCritic(nn.Module):
         return q1, q2
 
 
-class TD3Actor(nn.Module):
+class TD3Actor(nn.Module):  # TODO use MLP class ?
     action_dim: int
     max_action: float
+    num_hidden_layers: int = 2
+    num_hidden_units: int = 256
 
     @nn.compact
     def __call__(self, state, rng):
@@ -276,8 +277,16 @@ def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
 def create_trainer(
     observation_dim, action_dim, max_action, rng, config
 ) -> TD3BCTrainer:
-    critic_model = DoubleCritic()
-    actor_model = TD3Actor(action_dim=action_dim, max_action=max_action)
+    critic_model = DoubleCritic(
+        num_hidden_layers=config.num_hidden_layers,
+        num_hidden_units=config.num_hidden_units,
+    )
+    actor_model = TD3Actor(
+        action_dim=action_dim,
+        max_action=max_action,
+        num_hidden_layers=config.num_hidden_layers,
+        num_hidden_units=config.num_hidden_units,
+    )
     rng, rng1, rng2 = jax.random.split(rng, 3)
     # initialize critic and actor parameters
     critic_params = init_params(
