@@ -54,7 +54,7 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False
+    add_layer_norm: bool = False  # TODO add layer norm
 
     def setup(self):
         self.layers = [
@@ -111,11 +111,11 @@ class ValueCritic(nn.Module):
 class Policy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
-    log_std_min: Optional[float] = -20
+    log_std_min: Optional[float] = -10
     log_std_max: Optional[float] = 2
     tanh_squash_distribution: bool = False
     state_dependent_std: bool = True
-    final_fc_init_scale: float = 1e-2
+    final_fc_init_scale: float = 1e-3
 
     @nn.compact
     def __call__(
@@ -252,7 +252,7 @@ class IQLTrainer(NamedTuple):
             value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
             return value_loss
         new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
-        return agent._replace(value=new_value), value_and_grad
+        return agent._replace(value=new_value), value_loss
 
     def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def actor_loss_fn(actor_params):
@@ -285,12 +285,12 @@ class IQLTrainer(NamedTuple):
                 subkey, (batch_size,), 0, len(dataset.observations)
             )
             batch = jax.tree_map(lambda x: x[batch_indices], dataset)
-            
+
             agent, value_loss = agent.update_value(batch)
             agent, actor_loss = agent.update_actor(batch)
             agent, critic_loss = agent.update_critic(batch)
-            agent = target_update(agent, agent.target_critic, agent.config["target_update_rate"])
-        return agent, info
+            new_target_critic = target_update(agent.critic, agent.target_critic, agent.config["target_update_rate"])
+        return agent._replace(target_critic=new_target_critic), {} # TODO return losses
 
     @jax.jit
     def sample_actions(
