@@ -230,7 +230,7 @@ class IQLTrainer(NamedTuple):
     actor: TrainState
     config: flax.core.FrozenDict
 
-    def update(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
+    def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def critic_loss_fn(critic_params):
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
@@ -239,7 +239,10 @@ class IQLTrainer(NamedTuple):
             )
             critic_loss = ((q1 - target_q) ** 2 + (q2 - target_q) ** 2).mean()
             return critic_loss
+        new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
+        return agent._replace(critic=new_critic), critic_loss
 
+    def update_value(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]: 
         def value_loss_fn(value_params):
             q1, q2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.observations, batch.actions
@@ -248,7 +251,10 @@ class IQLTrainer(NamedTuple):
             v = agent.value.apply_fn(value_params, batch.observations)
             value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
             return value_loss
+        new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
+        return agent._replace(value=new_value), value_and_grad
 
+    def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def actor_loss_fn(actor_params):
             v = agent.value.apply_fn(agent.value.params, batch.observations)
             q1, q2 = agent.critic.apply_fn(
@@ -262,22 +268,8 @@ class IQLTrainer(NamedTuple):
             log_probs = dist.log_prob(batch.actions)
             actor_loss = -(exp_a * log_probs).mean()
             return actor_loss
-
-        new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
-        new_target_critic = target_update(
-            agent.critic, agent.target_critic, agent.config["target_update_rate"]
-        )
-        new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
         new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
-        return (
-            agent._replace(
-                critic=new_critic,
-                target_critic=new_target_critic,
-                value=new_value,
-                actor=new_actor,
-            ),
-            {},
-        )
+        return agent._replace(actor=new_actor), actor_loss
 
     @partial(jax.jit, static_argnums=(3, 4))
     def update_n_times(
@@ -293,7 +285,11 @@ class IQLTrainer(NamedTuple):
                 subkey, (batch_size,), 0, len(dataset.observations)
             )
             batch = jax.tree_map(lambda x: x[batch_indices], dataset)
-            agent, info = agent.update(batch)
+            
+            agent, value_loss = agent.update_value(batch)
+            agent, actor_loss = agent.update_actor(batch)
+            agent, critic_loss = agent.update_critic(batch)
+            agent = target_update(agent, agent.target_critic, agent.config["target_update_rate"])
         return agent, info
 
     @jax.jit
