@@ -261,7 +261,7 @@ class TD3BCTrainer(NamedTuple):
         low: float,
         high: float,
     ) -> jnp.ndarray:
-        action = agent.actor.apply_fn(agent.actor.params, obs, rng=None)
+        action = agent.actor.apply_fn(agent.actor.params, obs)
         action = action.clip(low, high)
         return action
 
