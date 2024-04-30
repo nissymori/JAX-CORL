@@ -24,7 +24,7 @@ class CQLConfig(BaseModel):
     env_name: str = "hopper-medium-expert-v2"
     max_steps: int = 1000000
     eval_interval: int = 10000
-    updates_per_epoch: int = 8  # how many updates per epoch.
+    updates_per_epoch: int = 4  # how many updates per epoch.
 
     num_test_rollouts: int = 5
     batch_size: int = 256
@@ -426,7 +426,7 @@ class CQLTrainer(NamedTuple):
         agent,
         obs: jnp.ndarray,
     ) -> jnp.ndarray:
-        action = agent.actor.apply_fn(agent.actor.params, obs, rng=None)
+        action = agent.actor.apply_fn(agent.actor.params, obs, temperature=0.0)
         action = action.clip(-1.0, 1.0)
         return action
 
@@ -553,7 +553,7 @@ if __name__ == "__main__":
         steps += 1
         rng, update_rng, eval_rng = jax.random.split(rng, 3)
         # update parameters
-        agent = agent.update_n_times(
+        agent, _ = agent.update_n_times(
             data,
             update_rng,
             config.alpha_lagrangian,
