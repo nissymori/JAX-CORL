@@ -25,3 +25,14 @@ Normalized Score
 |hopper-medium-v2|   |   |   |   |
 |walker2d-medium-expert-v2|   |   |   |   |
 |walker2d-medium-v2|   |   |   |   |
+
+# See also
+General offline algo repo
+- CORL
+Offline rl algo in jax
+- jaxrl
+- JaxCQL
+- sac-n-jax
+- dt-jax
+- td3-bc-jax
+
