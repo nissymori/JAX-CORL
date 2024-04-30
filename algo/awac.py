@@ -58,16 +58,11 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False
-    layer_norm_final: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         for i, hidden_dims in enumerate(self.hidden_dims):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
-            if self.add_layer_norm:  # Add layer norm after activation
-                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
-                    x = nn.LayerNorm()(x)
             if (
                 i + 1 < len(self.hidden_dims) or self.activate_final
             ):  # Add activation after layer norm
@@ -75,16 +70,31 @@ class MLP(nn.Module):
         return x
 
 
-class DoubleCritic(nn.Module):  # TODO use MLP class ?
+class Critic(nn.Module):
     hidden_dims: Sequence[int]
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
 
     @nn.compact
-    def __call__(self, state, action):
-        sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        return q1, q2
+    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
+        inputs = jnp.concatenate([observations, actions], -1)
+        critic = MLP((*self.hidden_dims, 1), activations=self.activations)(inputs)
+        return jnp.squeeze(critic, -1)
 
+
+def ensemblize(cls, num_qs, out_axes=0, **kwargs):
+    """
+    Ensemblize a module by creating `num_qs` instances of the module
+    """
+    split_rngs = kwargs.pop("split_rngs", {})
+    return nn.vmap(
+        cls,
+        variable_axes={"params": 0},
+        split_rngs={**split_rngs, "params": True},
+        in_axes=None,
+        out_axes=out_axes,
+        axis_size=num_qs,
+        **kwargs,
+    )
 
 class NormalTanhPolicy(nn.Module):
     hidden_dims: Sequence[int]
@@ -284,27 +294,27 @@ def create_trainer(
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
-    actor_def = NormalTanhPolicy(
+    actor_model = NormalTanhPolicy(
         config.actor_hidden_dims,
         action_dim=action_dim,
     )
 
-    actor_params = actor_def.init(actor_key, observations)
+    actor_params = actor_model.init(actor_key, observations)
     actor = TrainState.create(
-        apply_fn=actor_def.apply,
+        apply_fn=actor_model.apply,
         params=actor_params,
         tx=optax.adam(learning_rate=config.actor_lr),
     )
     # initialize critic
-    critic_def = DoubleCritic(hidden_dims=config.critic_hidden_dims)
+    critic_model = ensemblize(Critic, num_qs=2)(hidden_dims=config.critic_hidden_dims)
     critic = TrainState.create(
-        apply_fn=critic_def.apply,
-        params=critic_def.init(critic_key, observations, actions),
+        apply_fn=critic_model.apply,
+        params=critic_model.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
-        apply_fn=critic_def.apply,
-        params=critic_def.init(critic_key, observations, actions),
+        apply_fn=critic_model.apply,
+        params=critic_model.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # create immutable config for AWAC.
