@@ -129,6 +129,17 @@ class NormalTanhPolicy(nn.Module):
         return distribution
 
 
+# from https://github.com/young-geng/JaxCQL
+class Scalar(nn.Module):
+    init_value: float
+
+    def setup(self):
+        self.value = self.param('value', lambda x: self.init_value)
+
+    def __call__(self):
+        return self.value
+
+
 class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
@@ -306,10 +317,7 @@ def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
 def create_trainer(
     observation_dim, action_dim, max_action, rng, config
 ) -> CQLTrainer:
-    critic_model = DoubleCritic(
-        num_hidden_layers=config.num_hidden_layers,
-        num_hidden_units=config.num_hidden_units,
-    )
+    critic_model = DoubleCritic(hidden_dims=config.hidden_dims)
     actor_model = NormalTanhPolicy(
         hidden_dims=config.hidden_dims,
         action_dim=action_dim,
