@@ -206,8 +206,11 @@ class AWACTrainer(NamedTuple):
                 agent.critic.params, batch.observations, pi_actions
             )
             v = jnp.minimum(q_1, q_2)
+
+            lim = 1 - 1e-5
+            actions = jnp.clip(batch.actions, -lim, lim)
             q_1, q_2 = agent.critic.apply_fn(
-                agent.critic.params, batch.observations, batch.actions
+                agent.critic.params, batch.observations, actions
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
@@ -297,7 +300,6 @@ def create_trainer(
     actor_def = Policy(
         config.actor_hidden_dims,
         action_dim=action_dim,
-        log_std_min=-5.0,
     )
 
     actor_params = actor_def.init(actor_key, observations)
