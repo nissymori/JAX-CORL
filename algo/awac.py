@@ -284,7 +284,7 @@ def create_trainer(
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
-    actor_def = Policy(
+    actor_def = NormalTanhPolicy(
         config.actor_hidden_dims,
         action_dim=action_dim,
     )
@@ -296,7 +296,7 @@ def create_trainer(
         tx=optax.adam(learning_rate=config.actor_lr),
     )
     # initialize critic
-    critic_def = DoubleCritic()
+    critic_def = DoubleCritic(hidden_dims=config.critic_hidden_dims)
     critic = TrainState.create(
         apply_fn=critic_def.apply,
         params=critic_def.init(critic_key, observations, actions),
@@ -338,28 +338,12 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
-def get_normalization(dataset: Transition):
-    # into numpy.ndarray
-    dataset = jax.tree_map(lambda x: np.array(x), dataset)
-    returns = []
-    ret = 0
-    for r, term in zip(dataset.rewards, dataset.dones_float):
-        ret += r
-        if term:
-            returns.append(ret)
-            ret = 0
-    return (max(returns) - min(returns)) / 1000
-
-
 if __name__ == "__main__":
     if not config.disable_wandb:
         wandb.init(config=config, project="AWAC")
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset = get_dataset(env, config)
-
-    normalizing_factor = get_normalization(dataset)
-    dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
 
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent: AWACTrainer = create_trainer(
