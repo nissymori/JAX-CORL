@@ -18,9 +18,9 @@ from pydantic import BaseModel
 Params = flax.core.FrozenDict[str, Any]
 
 
-class IQLConfig(BaseModel):
+class AWACConfig(BaseModel):
     # GENERAL
-    env_name: str = "hopper-medium-expert-v2"
+    env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = np.random.choice(1000000)
     data_size: int = int(1e6)
     eval_episodes: int = 10
@@ -32,17 +32,19 @@ class IQLConfig(BaseModel):
     n_updates: int = 8
     # TRAINING
     actor_lr: float = 3e-4
-    value_lr: float = 3e-4
     critic_lr: float = 3e-4
-    hidden_dims: Tuple[int, int] = (256, 256)
+    actor_hidden_dims: Tuple[int, int] = (256, 256, 256, 256)
+    critic_hidden_dims: Tuple[int, int] = (256, 256)
     discount: float = 0.99
-    expectile: float = 0.7  # for Hopper 0.5
-    temperature: float = 3.0  # for Hopper 6.0
     tau: float = 0.005
+    beta: float = 1.0
+    target_update_freq: int = 1
+    exp_adv_max: float = 100.0
+    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
-config = IQLConfig(**conf_dict)
+config = AWACConfig(**conf_dict)
 
 
 def default_init(scale: Optional[float] = 1.0):
@@ -70,51 +72,38 @@ class MLP(nn.Module):
         return x
 
 
-class Critic(nn.Module):
-    hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
+class DoubleCritic(nn.Module):  # TODO use MLP class ?
+    num_hidden_units: int = 256
+    num_hidden_layers: int = 2
 
     @nn.compact
-    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
-        inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP(
-            (*self.hidden_dims, 1), activations=self.activations, add_layer_norm=True
-        )(inputs)
-        return jnp.squeeze(critic, -1)
+    def __call__(self, state, action):
+        sa = jnp.concatenate([state, action], axis=-1)
+        x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(sa)
+        x_q = nn.LayerNorm()(x_q)
+        x_q = nn.relu(x_q)
+        for i in range(1, self.num_hidden_layers):
+            x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(x_q)
+            x_q = nn.LayerNorm()(x_q)
+            x_q = nn.relu(x_q)
+        q1 = nn.Dense(1, kernel_init=default_init())(x_q)
 
-
-def ensemblize(cls, num_qs, out_axes=0, **kwargs):
-    """
-    Ensemblize a module by creating `num_qs` instances of the module
-    """
-    split_rngs = kwargs.pop("split_rngs", {})
-    return nn.vmap(
-        cls,
-        variable_axes={"params": 0},
-        split_rngs={**split_rngs, "params": True},
-        in_axes=None,
-        out_axes=out_axes,
-        axis_size=num_qs,
-        **kwargs,
-    )
-
-
-class ValueCritic(nn.Module):
-    hidden_dims: Sequence[int]
-
-    @nn.compact
-    def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        critic = MLP((*self.hidden_dims, 1), add_layer_norm=True)(observations)
-        return jnp.squeeze(critic, -1)
+        x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(sa)
+        x_q = nn.LayerNorm()(x_q)
+        x_q = nn.relu(x_q)
+        for i in range(1, self.num_hidden_layers):
+            x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(x_q)
+            x_q = nn.LayerNorm()(x_q)
+            x_q = nn.relu(x_q)
+        q2 = nn.Dense(1)(x_q)
+        return q1, q2
 
 
 class Policy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
-    log_std_min: Optional[float] = -10
-    log_std_max: Optional[float] = 2
-    tanh_squash_distribution: bool = False
-    state_dependent_std: bool = True
+    log_std_min: Optional[float] = -20.0
+    log_std_max: Optional[float] = 2.0
     final_fc_init_scale: float = 1e-3
 
     @nn.compact
@@ -129,29 +118,14 @@ class Policy(nn.Module):
         means = nn.Dense(
             self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
         )(outputs)
-        if self.state_dependent_std:
-            log_stds = nn.Dense(
-                self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
-            )(outputs)
-        else:
-            log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
+        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
 
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
 
         distribution = distrax.MultivariateNormalDiag(
             loc=means, scale_diag=jnp.exp(log_stds) * temperature
         )
-        if self.tanh_squash_distribution:
-            distribution = TransformedWithMode(
-                distribution, distrax.Block(distrax.Tanh(), ndims=1)
-            )
-
         return distribution
-
-
-class TransformedWithMode(distrax.Transformed):
-    def mode(self) -> jnp.ndarray:
-        return self.bijector.forward(self.distribution.mode())
 
 
 class Transition(NamedTuple):
@@ -199,11 +173,6 @@ def get_dataset(
     return dataset
 
 
-def expectile_loss(diff, expectile=0.8):
-    weight = jnp.where(diff > 0, expectile, (1 - expectile))
-    return weight * (diff**2)
-
-
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
 ) -> TrainState:
@@ -222,79 +191,88 @@ def update_by_loss_grad(
     return new_train_state, loss
 
 
-class IQLTrainer(NamedTuple):
+class AWACTrainer(NamedTuple):
     rng: jax.random.PRNGKey
     critic: TrainState
     target_critic: TrainState
-    value: TrainState
     actor: TrainState
     config: flax.core.FrozenDict
 
-    def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def critic_loss_fn(critic_params):
-            next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
-            target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
-            q1, q2 = agent.critic.apply_fn(
-                critic_params, batch.observations, batch.actions
-            )
-            critic_loss = ((q1 - target_q) ** 2 + (q2 - target_q) ** 2).mean()
-            return critic_loss
-
-        new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
-        return agent._replace(critic=new_critic), critic_loss
-
-    def update_value(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def value_loss_fn(value_params):
-            q1, q2 = agent.target_critic.apply_fn(
-                agent.target_critic.params, batch.observations, batch.actions
-            )
-            q = jnp.minimum(q1, q2)
-            v = agent.value.apply_fn(value_params, batch.observations)
-            value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
-            return value_loss
-
-        new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
-        return agent._replace(value=new_value), value_loss
-
-    def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def actor_loss_fn(actor_params):
-            v = agent.value.apply_fn(agent.value.params, batch.observations)
-            q1, q2 = agent.critic.apply_fn(
-                agent.critic.params, batch.observations, batch.actions
-            )
-            q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * agent.config["temperature"])
-            exp_a = jnp.minimum(exp_a, 100.0)
-
+    def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
+        def get_actor_loss(actor_params):
             dist = agent.actor.apply_fn(actor_params, batch.observations)
-            log_probs = dist.log_prob(batch.actions)
-            actor_loss = -(exp_a * log_probs).mean()
-            return actor_loss
+            pi_actions = dist.sample(seed=rng)
+            q_1, q_2 = agent.critic.apply_fn(
+                agent.critic.params, batch.observations, pi_actions
+            )
+            v = jnp.minimum(q_1, q_2)
 
-        new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
+            lim = 1 - 1e-5
+            actions = jnp.clip(batch.actions, -lim, lim)
+            q_1, q_2 = agent.critic.apply_fn(
+                agent.critic.params, batch.observations, actions
+            )
+            q = jnp.minimum(q_1, q_2)
+            adv = q - v
+            weights = jnp.clip(
+                jnp.exp(adv / agent.config["beta"]), 0, agent.config["exp_adv_max"]
+            )
+            weights = jax.lax.stop_gradient(weights)
+
+            log_prob = dist.log_prob(batch.actions)
+            loss = -jnp.mean(log_prob * weights).mean()
+            return loss
+
+        new_actor, actor_loss = update_by_loss_grad(agent.actor, get_actor_loss)
         return agent._replace(actor=new_actor), actor_loss
 
-    @partial(jax.jit, static_argnums=(3, 4))
+    def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
+        def get_critic_loss(critic_params):
+            dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
+            next_actions = dist.sample(seed=rng)
+            n_q_1, n_q_2 = agent.target_critic.apply_fn(
+                agent.target_critic.params, batch.next_observations, next_actions
+            )
+            next_q = jnp.minimum(n_q_1, n_q_2)
+            q_target = (
+                batch.rewards
+                + agent.config["discount"] * (1.0 - batch.dones_float) * next_q
+            )
+            q_target = jax.lax.stop_gradient(q_target)
+
+            q_1, q_2 = agent.critic.apply_fn(
+                critic_params, batch.observations, batch.actions
+            )
+
+            loss = jnp.mean((q_1 - q_target) ** 2 + (q_2 - q_target) ** 2)
+            return loss
+
+        new_critic, critic_loss = update_by_loss_grad(agent.critic, get_critic_loss)
+        return agent._replace(critic=new_critic), critic_loss
+
+    @partial(jax.jit, static_argnums=(3, 4, 5))
     def update_n_times(
         agent,
         dataset: Transition,
         rng: jax.random.PRNGKey,
         batch_size: int,
+        target_update_freq: int,
         n_updates: int,
     ):
         for _ in range(n_updates):
-            rng, subkey = jax.random.split(rng)
+            rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             batch_indices = jax.random.randint(
-                subkey, (batch_size,), 0, len(dataset.observations)
+                batch_rng, (batch_size,), 0, len(dataset.observations)
             )
             batch = jax.tree_map(lambda x: x[batch_indices], dataset)
 
-            agent, value_loss = agent.update_value(batch)
-            agent, actor_loss = agent.update_actor(batch)
-            agent, critic_loss = agent.update_critic(batch)
+            agent, critic_loss = agent.update_critic(batch, critic_rng)
             new_target_critic = target_update(
-                agent.critic, agent.target_critic, agent.config["target_update_rate"]
+                agent.critic,
+                agent.target_critic,
+                agent.config["target_update_rate"],
             )
+            agent, actor_loss = agent.update_actor(batch, actor_rng)
         return agent._replace(target_critic=new_target_critic), {}  # TODO return losses
 
     @jax.jit
@@ -308,75 +286,53 @@ class IQLTrainer(NamedTuple):
         actions = agent.actor.apply_fn(
             agent.actor.params, observations, temperature=temperature
         ).sample(seed=seed)
-        actions = jnp.clip(actions, -1, 1)
+        actions = jnp.clip(actions, -1.0, 1.0)
         return actions
 
 
 def create_trainer(
-    observations: jnp.ndarray,
-    actions: jnp.ndarray,
-    config: IQLConfig,
-    opt_decay_schedule: str = "cosine",
-) -> IQLTrainer:
+    observations: jnp.ndarray, actions: jnp.ndarray, config: AWACConfig
+) -> AWACTrainer:
     rng = jax.random.PRNGKey(config.seed)
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
     actor_def = Policy(
-        config.hidden_dims,
+        config.actor_hidden_dims,
         action_dim=action_dim,
-        log_std_min=-5.0,
-        state_dependent_std=False,
-        tanh_squash_distribution=False,
     )
-
-    if opt_decay_schedule == "cosine":
-        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
-        actor_tx = optax.chain(
-            optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
-        )
-    else:
-        actor_tx = optax.adam(learning_rate=config.actor_lr)
 
     actor_params = actor_def.init(actor_key, observations)
     actor = TrainState.create(
-        apply_fn=actor_def.apply, params=actor_params, tx=actor_tx
+        apply_fn=actor_def.apply,
+        params=actor_params,
+        tx=optax.adam(learning_rate=config.actor_lr),
     )
     # initialize critic
-    critic_def = ensemblize(Critic, num_qs=2)(config.hidden_dims)
-    critic_params = critic_def.init(critic_key, observations, actions)
+    critic_def = DoubleCritic()
     critic = TrainState.create(
         apply_fn=critic_def.apply,
-        params=critic_params,
+        params=critic_def.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
         apply_fn=critic_def.apply,
-        params=critic_params,
+        params=critic_def.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-    # initialize value
-    value_def = ValueCritic(config.hidden_dims)
-    value_params = value_def.init(value_key, observations)
-    value = TrainState.create(
-        apply_fn=value_def.apply,
-        params=value_params,
-        tx=optax.adam(learning_rate=config.value_lr),
-    )
-    # create immutable config for IQL.
+    # create immutable config for AWAC.
     config = flax.core.FrozenDict(
         dict(
             discount=config.discount,
-            temperature=config.temperature,
-            expectile=config.expectile,
+            beta=config.beta,
             target_update_rate=config.tau,
+            exp_adv_max=config.exp_adv_max,
         )
     )  # make sure config is immutable
-    return IQLTrainer(
+    return AWACTrainer(
         rng,
         critic=critic,
         target_critic=target_critic,
-        value=value,
         actor=actor,
         config=config,
     )
@@ -409,16 +365,17 @@ def get_normalization(dataset: Transition):
 
 
 if __name__ == "__main__":
-    wandb.init(config=config, project="iql")
+    if not config.disable_wandb:
+        wandb.init(config=config, project="AWAC")
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset: Transition = get_dataset(env, config)
+    dataset = get_dataset(env, config)
 
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
 
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
-    agent: IQLTrainer = create_trainer(
+    agent: AWACTrainer = create_trainer(
         example_batch.observations,
         example_batch.actions,
         config,
@@ -428,19 +385,23 @@ if __name__ == "__main__":
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
-            dataset, subkey, config.batch_size, config.n_updates
+            dataset,
+            subkey,
+            config.batch_size,
+            config.target_update_freq,
+            config.n_updates,
         )
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            wandb.log(train_metrics, step=i)
+            if not config.disable_wandb:
+                wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
-            normalized_score = evaluate(
-                policy_fn, env, num_episodes=config.eval_episodes
-            )
+            normalized_score = evaluate(policy_fn, env, config.eval_episodes)
             print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
-            wandb.log(eval_metrics, step=i)
+            if not config.disable_wandb:
+                wandb.log(eval_metrics, step=i)
