@@ -68,7 +68,9 @@ class ReplayBuffer:
         self._actions = torch.zeros(
             (buffer_size, action_dim), dtype=torch.float32, device=device
         )
-        self._rewards = torch.zeros((buffer_size, 1), dtype=torch.float32, device=device)
+        self._rewards = torch.zeros(
+            (buffer_size, 1), dtype=torch.float32, device=device
+        )
         self._next_states = torch.zeros(
             (buffer_size, state_dim), dtype=torch.float32, device=device
         )
@@ -432,8 +434,12 @@ def train(config: TrainConfig):
     critic_2 = Critic(**actor_critic_kwargs)
     critic_1.to(config.device)
     critic_2.to(config.device)
-    critic_1_optimizer = torch.optim.Adam(critic_1.parameters(), lr=config.learning_rate)
-    critic_2_optimizer = torch.optim.Adam(critic_2.parameters(), lr=config.learning_rate)
+    critic_1_optimizer = torch.optim.Adam(
+        critic_1.parameters(), lr=config.learning_rate
+    )
+    critic_2_optimizer = torch.optim.Adam(
+        critic_2.parameters(), lr=config.learning_rate
+    )
 
     awac = AdvantageWeightedActorCritic(
         actor=actor,
