@@ -31,8 +31,7 @@ class CQLConfig(BaseModel):
     data_size: int = 1000000
     seed: int = 0
     # network config
-    num_hidden_layers: int = 2
-    num_hidden_units: int = 256
+    hidden_dims: Sequence[int] = (256, 256)  # from jaxcql
     critic_lr: float = 1e-3
     actor_lr: float = 1e-3
     # TD3-BC specific
@@ -48,62 +47,92 @@ conf_dict = OmegaConf.from_cli()
 config = CQLConfig(**conf_dict)
 
 
-def default_init(scale: Optional[float] = jnp.sqrt(2)):
-    return nn.initializers.orthogonal(scale)
+def default_init(scale: Optional[float] = 1.0):
+    return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
+
+
+class MLP(nn.Module):
+    hidden_dims: Sequence[int]
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
+    activate_final: bool = False
+    kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
+    add_layer_norm: bool = False  # TODO add layer norm
+    layer_norm_final: bool = False
+
+    def setup(self):
+        self.layers = []
+        for i, hidden_dim in enumerate(self.hidden_dims):
+            self.layers.append(nn.Dense(hidden_dim, kernel_init=self.kernel_init))
+            if self.add_layer_norm:
+                if i + 1 < len(self.hidden_dims) or self.layer_norm_final:
+                    self.layers.append(nn.LayerNorm())
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i + 1 < len(self.layers) or self.activate_final:
+                x = self.activations(x)
+        return x
 
 
 class DoubleCritic(nn.Module):  # TODO use MLP class ?
-    num_hidden_units: int = 256
-    num_hidden_layers: int = 2
+    hidden_dims: Sequence[int]
 
     @nn.compact
     def __call__(self, state, action, rng):
         sa = jnp.concatenate([state, action], axis=-1)
-        x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(sa)
-        x_q = nn.LayerNorm()(x_q)
-        x_q = nn.relu(x_q)
-        for i in range(1, config.num_hidden_layers):
-            x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_q)
-            x_q = nn.LayerNorm()(x_q)
-            x_q = nn.relu(x_q)
-        q1 = nn.Dense(1, kernel_init=default_init())(x_q)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
 
-        x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(sa)
-        x_q = nn.LayerNorm()(x_q)
-        x_q = nn.relu(x_q)
-        for i in range(1, config.num_hidden_layers):
-            x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_q)
-            x_q = nn.LayerNorm()(x_q)
-            x_q = nn.relu(x_q)
-        q2 = nn.Dense(1)(x_q)
+        q_2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
         return q1, q2
 
 
-class TD3Actor(nn.Module):  # TODO use MLP class ?
+class NormalTanhPolicy(nn.Module):
+    hidden_dims: Sequence[int]
     action_dim: int
-    max_action: float
-    num_hidden_layers: int = 2
-    num_hidden_units: int = 256
+    log_std_min: Optional[float] = -10
+    log_std_max: Optional[float] = 2
+    tanh_squash_distribution: bool = False
+    state_dependent_std: bool = True
+    final_fc_init_scale: float = 1e-3
 
     @nn.compact
-    def __call__(self, state, rng):
-        x_a = nn.relu(
-            nn.Dense(config.num_hidden_units, kernel_init=default_init())(state)
+    def __call__(
+        self, observations: jnp.ndarray, temperature: float = 1.0
+    ) -> distrax.Distribution:
+        outputs = MLP(
+            self.hidden_dims,
+            activate_final=True,
+        )(observations)
+
+        means = nn.Dense(
+            self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
+        )(outputs)
+        if self.state_dependent_std:
+            log_stds = nn.Dense(
+                self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
+            )(outputs)
+        else:
+            log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
+
+        log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
+
+        distribution = distrax.MultivariateNormalDiag(
+            loc=means, scale_diag=jnp.exp(log_stds) * temperature
         )
-        for i in range(1, config.num_hidden_layers):
-            x_a = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_a)
-            x_a = nn.relu(x_a)
-        action = nn.Dense(action_dim, kernel_init=default_init())(x_a)
-        action = self.max_action * jnp.tanh(
-            action
-        )  # scale to [-max_action, max_action]
-        return action
+        if self.tanh_squash_distribution:
+            distribution = TransformedWithMode(
+                distribution, distrax.Block(distrax.Tanh(), ndims=1)
+            )
+
+        return distribution
 
 
 class Transition(NamedTuple):
-    states: jnp.ndarray
+    observations: jnp.ndarray
     actions: jnp.ndarray
-    next_states: jnp.ndarray
+    next_observations: jnp.ndarray
     rewards: jnp.ndarray
     dones: jnp.ndarray
 
@@ -117,24 +146,24 @@ def get_dataset(
     """
     rng, subkey = jax.random.split(rng)
     data = Transition(
-        states=jnp.asarray(dataset["observations"]),
+        observations=jnp.asarray(dataset["observations"]),
         actions=jnp.asarray(dataset["actions"]),
-        next_states=jnp.asarray(dataset["next_observations"]),
+        next_observations=jnp.asarray(dataset["next_observations"]),
         rewards=jnp.asarray(dataset["rewards"]),
         dones=jnp.asarray(dataset["terminals"]),
     )
     # shuffle data and select the first data_size samples
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
-    perm = jax.random.permutation(rng_permute, len(data.states))
+    perm = jax.random.permutation(rng_permute, len(data.observations))
     data = jax.tree_map(lambda x: x[perm], data)
-    assert len(data.states) >= config.data_size
+    assert len(data.observations) >= config.data_size
     data = jax.tree_map(lambda x: x[: config.data_size], data)
-    # normalize states and next_states
-    obs_mean = jnp.mean(data.states, axis=0)
-    obs_std = jnp.std(data.states, axis=0)
+    # normalize observations and next_observations
+    obs_mean = jnp.mean(data.observations, axis=0)
+    obs_std = jnp.std(data.observations, axis=0)
     data = data._replace(
-        states=(data.states - obs_mean) / obs_std,
-        next_states=(data.next_states - obs_mean) / obs_std,
+        observations=(data.observations - obs_mean) / obs_std,
+        next_observations=(data.next_observations - obs_mean) / obs_std,
     )
     return data, obs_mean, obs_std
 
@@ -160,11 +189,11 @@ class CQLTrainer(NamedTuple):
     def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
         def actor_loss_fn(actor_params):
             predicted_action = agent.actor.apply_fn(
-                actor_params, batch.states, rng=None
+                actor_params, batch.observations, rng=None
             )
             critic_params = jax.lax.stop_gradient(agent.critic.params)
             q_value, _ = agent.critic.apply_fn(
-                critic_params, batch.states, predicted_action, rng=None
+                critic_params, batch.observations, predicted_action, rng=None
             )
 
             mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
@@ -180,10 +209,10 @@ class CQLTrainer(NamedTuple):
     def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
         def critic_loss_fn(critic_params):
             q_pred_1, q_pred_2 = agent.critic.apply_fn(
-                critic_params, batch.states, batch.actions, rng=None
+                critic_params, batch.observations, batch.actions, rng=None
             )
             target_next_action = agent.actor.apply_fn(
-                agent.actor_params_target, batch.next_states, rng=None
+                agent.actor_params_target, batch.next_observations, rng=None
             )
             policy_noise = (
                 agent.config["policy_noise_std"]
@@ -198,7 +227,7 @@ class CQLTrainer(NamedTuple):
             )
             q_next_1, q_next_2 = agent.critic.apply_fn(
                 agent.critic_params_target,
-                batch.next_states,
+                batch.next_observations,
                 target_next_action,
                 rng=None,
             )
@@ -233,7 +262,7 @@ class CQLTrainer(NamedTuple):
         for _ in range(n):
             rng, batch_rng = jax.random.split(rng, 2)
             batch_idx = jax.random.randint(
-                batch_rng, (batch_size,), 0, len(data.states)
+                batch_rng, (batch_size,), 0, len(data.observations)
             )
             batch: Transition = jax.tree_map(lambda x: x[batch_idx], data)
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
@@ -281,11 +310,13 @@ def create_trainer(
         num_hidden_layers=config.num_hidden_layers,
         num_hidden_units=config.num_hidden_units,
     )
-    actor_model = TD3Actor(
+    actor_model = NormalTanhPolicy(
+        hidden_dims=config.hidden_dims,
         action_dim=action_dim,
-        max_action=max_action,
-        num_hidden_layers=config.num_hidden_layers,
-        num_hidden_units=config.num_hidden_units,
+        log_std_min=config.log_std_min,
+        log_std_max=config.log_std_max,
+        state_dependent_std=True,
+        tanh_squash_distribution=True,
     )
     rng, rng1, rng2 = jax.random.split(rng, 3)
     # initialize critic and actor parameters
