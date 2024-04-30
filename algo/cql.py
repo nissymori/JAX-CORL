@@ -5,6 +5,8 @@ from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple
 import d4rl
 import flax
 import flax.linen as nn
+from flax.training.train_state import TrainState
+import distrax
 import gym
 import jax
 import jax.numpy as jnp
@@ -12,7 +14,6 @@ import numpy as np
 import optax
 import tqdm
 import wandb
-from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tqdm import tqdm
@@ -32,15 +33,21 @@ class CQLConfig(BaseModel):
     seed: int = 0
     # network config
     hidden_dims: Sequence[int] = (256, 256)  # from jaxcql
-    critic_lr: float = 1e-3
-    actor_lr: float = 1e-3
-    # TD3-BC specific
-    policy_freq: int = 2  # update actor every policy_freq updates
-    tau: float = 0.005  # target network update rate
-    alpha: float = 2.5  # BC loss weight
-    policy_noise_std: float = 0.2  # std of policy noise
-    policy_noise_clip: float = 0.5  # clip policy noise
-    gamma: float = 0.99  # discount factor
+    critic_lr: float = 3e-4
+    actor_lr: float = 3e-4
+    # CQL config
+    discount: float = 0.99
+    alpha_multiplier: float = 1.0
+    use_automatic_entropy_tuning: bool = True
+    backup_entropy: bool = False
+    target_entropy: float = 0.0
+    tau: float = 0.005
+    cql_n_actions: int = 10
+    cql_clip_diff_min: float = -np.inf
+    cql_clip_diff_max: float = np.inf
+    cql_temperature: float = 1.0
+    alpha_lagrangian: bool = True
+    cql_target_budget: Optional[float] = None
 
 
 conf_dict = OmegaConf.from_cli()
@@ -56,22 +63,19 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False  # TODO add layer norm
+    add_layer_norm: bool = False
     layer_norm_final: bool = False
-
-    def setup(self):
-        self.layers = []
-        for i, hidden_dim in enumerate(self.hidden_dims):
-            self.layers.append(nn.Dense(hidden_dim, kernel_init=self.kernel_init))
-            if self.add_layer_norm:
-                if i + 1 < len(self.hidden_dims) or self.layer_norm_final:
-                    self.layers.append(nn.LayerNorm())
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i + 1 < len(self.layers) or self.activate_final:
+        for i, hidden_dims in enumerate(self.hidden_dims):
+            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
+            if self.add_layer_norm:  # Add layer norm after activation
+                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    x = nn.LayerNorm()(x)
+            if (
+                i + 1 < len(self.hidden_dims) or self.activate_final
+            ):  # Add activation after layer norm
                 x = self.activations(x)
         return x
 
@@ -80,19 +84,18 @@ class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, state, action, rng):
+    def __call__(self, state, action):
         sa = jnp.concatenate([state, action], axis=-1)
         q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-
-        q_2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
         return q1, q2
 
 
 class NormalTanhPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
-    log_std_min: Optional[float] = -10
-    log_std_max: Optional[float] = 2
+    log_std_min: Optional[float] = -10.0
+    log_std_max: Optional[float] = 2.0
     tanh_squash_distribution: bool = False
     state_dependent_std: bool = True
     final_fc_init_scale: float = 1e-3
@@ -129,12 +132,17 @@ class NormalTanhPolicy(nn.Module):
         return distribution
 
 
+class TransformedWithMode(distrax.Transformed):
+    def mode(self) -> jnp.ndarray:
+        return self.bijector.forward(self.distribution.mode())
+
+
 # from https://github.com/young-geng/JaxCQL
 class Scalar(nn.Module):
     init_value: float
 
     def setup(self):
-        self.value = self.param('value', lambda x: self.init_value)
+        self.value = self.param("value", lambda x: self.init_value)
 
     def __call__(self):
         return self.value
@@ -179,6 +187,15 @@ def get_dataset(
     return data, obs_mean, obs_std
 
 
+def target_update(
+    model: TrainState, target_model: TrainState, tau: float
+) -> TrainState:
+    new_target_params = jax.tree_map(
+        lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
+    )
+    return target_model.replace(params=new_target_params)
+
+
 def update_by_loss_grad(
     train_state: TrainState, loss_fn: Callable
 ) -> Tuple[TrainState, jnp.ndarray]:
@@ -191,82 +208,183 @@ def update_by_loss_grad(
 class CQLTrainer(NamedTuple):
     actor: TrainState
     critic: TrainState
-    actor_params_target: flax.core.frozen_dict.FrozenDict
-    critic_params_target: flax.core.frozen_dict.FrozenDict
-    update_idx: jnp.int32
+    target_critic: TrainState
+    log_entropy_alpha: TrainState
     max_action: float
     config: flax.core.FrozenDict
 
+    def update_alpha(agent, batch: Transition, rng: jax.random.PRNGKey):
+        dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
+        actions = dist.sample(seed=rng)
+
+        def get_alpha_loss(alpha_params):
+            log_alpha = agent.log_entropy_alpha.apply_fn(alpha_params)
+            alpha_loss = log_alpha * (
+                -dist.log_prob(actions).mean() - agent.config["target_entropy"]
+            )
+            return alpha_loss
+
+        new_alpha, alpha_loss = update_by_loss_grad(
+            agent.log_entropy_alpha, get_alpha_loss
+        )
+        return agent._replace(log_entropy_alpha=new_alpha), alpha_loss
+
     def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
+        alpha = jnp.exp(
+            agent.log_entropy_alpha.apply_fn(agent.log_entropy_alpha.params)
+        )
+
         def actor_loss_fn(actor_params):
-            predicted_action = agent.actor.apply_fn(
-                actor_params, batch.observations, rng=None
+            dist = agent.actor.apply_fn(actor_params, batch.observations)
+            actions = dist.sample(seed=rng)
+            log_probs = dist.log_prob(actions)
+
+            q1, q2 = agent.critic.apply_fn(
+                agent.critic.params, batch.observations, actions
             )
-            critic_params = jax.lax.stop_gradient(agent.critic.params)
-            q_value, _ = agent.critic.apply_fn(
-                critic_params, batch.observations, predicted_action, rng=None
+            q = jnp.minimum(q1, q2)
+            actor_loss = (alpha * log_probs - q).mean()
+            return actor_loss
+
+        new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
+        return agent._replace(actor=new_actor), actor_loss
+
+    def update_critic(agent, batch: Transition, _rng: jax.random.PRNGKey):
+        def get_cql_critic_loss(critic_params):
+            q1, q2 = agent.critic.apply_fn(
+                critic_params, batch.observations, batch.actions
             )
 
-            mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
-            loss_lambda = agent.config["alpha"] / mean_abs_q
+            ########## Normal double critic TD loss ##########
+            rng, actor_rng = jax.random.split(_rng)
+            next_dist = agent.actor.apply_fn(
+                agent.actor.params, batch.next_observations
+            )
+            next_actions = next_dist.sample(seed=actor_rng)
+            n_q1, n_q2 = agent.target_critic.apply_fn(
+                agent.target_critic.params, batch.next_observations, next_actions
+            )
+            n_q = jnp.minimum(n_q1, n_q2)
+            target_q = (
+                batch.rewards + agent.config["discount"] * (1 - batch.dones) * n_q
+            )
 
-            bc_loss = jnp.square(predicted_action - batch.actions).mean()
-            loss_actor = -1.0 * q_value.mean() * loss_lambda + bc_loss
-            return loss_actor
+            q_mse1 = jnp.mean((q1 - target_q) ** 2)
+            q_mse2 = jnp.mean((q2 - target_q) ** 2)
 
-        new_actor, _ = update_by_loss_grad(agent.actor, actor_loss_fn)
-        return agent._replace(actor=new_actor)
+            ######### CQL loss #########
+            # radom actions
+            rng, rand_rng, current_rng, next_rng = jax.random.split(rng, 4)
+            rand_actions = jax.random.uniform(
+                rand_rng,
+                shape=(
+                    agent.config["batch_size"],
+                    config.cql_n_actions,
+                    agent.config["action_dim"],
+                ),
+                minval=-1.0,
+                maxval=1.0,
+            )  # (batch, n_a, a)
+            # current actions
+            current_rngs = jax.random.split(current_rng, agent.config["cql_n_actions"])
+            current_dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
+            current_actions, current_log_probs = jax.vmap(
+                current_dist.sample_and_log_prob
+            )(
+                seed=current_rngs
+            )  # (n_a, batch, a)
+            current_actions = jnp.swapaxes(current_actions, 0, 1)  # (batch, n_a, a)
+            current_log_probs = jnp.swapaxes(current_log_probs, 0, 1)  # (batch, n_a)
+            # next actions
+            next_rngs = jax.random.split(next_rng, agent.config["cql_n_actions"])
+            next_dist = agent.actor.apply_fn(
+                agent.actor.params, batch.next_observations
+            )
+            next_actions, next_log_probs = jax.vmap(next_dist.sample_and_log_prob)(
+                seed=next_rngs
+            )  # (n_a, batch, a)
+            next_actions = jnp.swapaxes(next_actions, 0, 1)  # (batch, n_a, a)
+            next_log_probs = jnp.swapaxes(next_log_probs, 0, 1)  # (batch, n_a)
 
-    def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
-        def critic_loss_fn(critic_params):
-            q_pred_1, q_pred_2 = agent.critic.apply_fn(
-                critic_params, batch.observations, batch.actions, rng=None
-            )
-            target_next_action = agent.actor.apply_fn(
-                agent.actor_params_target, batch.next_observations, rng=None
-            )
-            policy_noise = (
-                agent.config["policy_noise_std"]
-                * agent.max_action
-                * jax.random.normal(rng, batch.actions.shape)
-            )
-            target_next_action = target_next_action + policy_noise.clip(
-                -agent.config["policy_noise_clip"], agent.config["policy_noise_clip"]
-            )
-            target_next_action = target_next_action.clip(
-                -agent.max_action, agent.max_action
-            )
-            q_next_1, q_next_2 = agent.critic.apply_fn(
-                agent.critic_params_target,
-                batch.next_observations,
-                target_next_action,
-                rng=None,
-            )
-            target = batch.rewards[..., None] + agent.config["gamma"] * jnp.minimum(
-                q_next_1, q_next_2
-            ) * (1 - batch.dones[..., None])
-            target = jax.lax.stop_gradient(target)
-            value_loss_1 = jnp.square(q_pred_1 - target)
-            value_loss_2 = jnp.square(q_pred_2 - target)
-            value_loss = (value_loss_1 + value_loss_2).mean()
-            return value_loss
+            # Q values
+            repeated_obs = jnp.tile(
+                batch.observation[:, None, :], (1, cql_n_actions, 1)
+            )  # (batch, n_a, o)
+            cql_q1_rand, cql_q2_rand = agent.critic.apply_fn(
+                critic_params, repeated_obs, rand_actions
+            )  # (batch, n_a, 1)
+            cql_q1_current, cql_q2_current = agent.critic.apply_fn(
+                critic_params, repeated_obs, current_actions
+            )  # (batch, n_a, 1)
+            cql_q1_next, cql_q2_next = agent.critic.apply_fn(
+                critic_params, repeated_obs, next_actions
+            )  # (batch, n_a, 1)
 
-        new_critic, _ = update_by_loss_grad(agent.critic, critic_loss_fn)
-        return agent._replace(critic=new_critic)
+            with jax.ensure_compile_time_eval():
+                random_density = jnp.log(0.5 ** agent.config["action_dim"])
+            # concatenate q values
+            cql_cat_q1 = jnp.concatenate(
+                [
+                    cql_q1_rand[:, :, 0] - random_density,
+                    cql_q1_current[:, :, 0] - current_log_probs,
+                    cql_q1_next[:, :, 0] - next_log_probs,
+                ],
+                axis=1,
+            )  # (batch, 3 * n_a)
+            cql_cat_q2 = jnp.concatenate(
+                [
+                    cql_q2_rand[:, :, 0] - random_density,
+                    cql_q2_current[:, :, 0] - current_log_probs,
+                    cql_q2_next[:, :, 0] - next_log_probs,
+                ],
+                axis=1,
+            )  # (batch, 3 * n_a)
 
-    @partial(
-        jax.jit,
-        static_argnames=(
-            "policy_freq",
-            "batch_size",
-            "n",
-        ),
-    )
+            # logsumexp cql
+            cql_ood_q1 = (
+                jax.scipy.special.logsumexp(
+                    cql_cat_q1 / agent.config["cql_temperature"], axis=1
+                )
+                * agent["config.cql_temperature"]
+            )  # (b, )
+            cql_ood_q2 = (
+                jax.scipy.special.logsumexp(
+                    cql_cat_q2 / agent.config["cql_temperature"], axis=1
+                )
+                * agent.config["cql_temperature"]
+            )  # (b, )
+
+            # cql loss
+            cql_diff1 = jnp.clip(
+                cql_ood_q1 - q1,
+                agent.config["cql_clip_diff_min"],
+                agent.config["cql_clip_diff_max"],
+            )
+            cql_diff2 = jnp.clip(
+                cql_ood_q2 - q2,
+                agent.config["cql_clip_diff_min"],
+                agent.config["cql_clip_diff_max"],
+            )
+            cql_alpha = jnp.exp(
+                agent.log_conservative_alpha.apply_fn(
+                    agent.log_conservative_alpha.params
+                )
+            )
+            q1_cql_loss = jnp.mean(cql_diff1) * cql_alpha
+            q2_cql_loss = jnp.mean(cql_diff2) * cql_alpha
+            # mse loss + cql loss
+            total_loss = q_mse1 + q_mse2 + q1_cql_loss + q2_cql_loss
+            return total_loss
+
+        new_critic, critic_loss = update_by_loss_grad(agent.critic, get_cql_critic_loss)
+        return agent._replace(critic=new_critic), critic_loss
+
+    @partial(jax.jit, static_argnums=(3, 4, 5))
     def update_n_times(
         agent,
         data: Transition,
         rng: jax.random.PRNGKey,
-        policy_freq: int,
+        alpha_lagrangian: bool,
         batch_size: int,
         n: int,
     ):  # TODO reduce arguments??
@@ -276,98 +394,103 @@ class CQLTrainer(NamedTuple):
                 batch_rng, (batch_size,), 0, len(data.observations)
             )
             batch: Transition = jax.tree_map(lambda x: x[batch_idx], data)
-            rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            agent = agent.update_critic(batch, critic_rng)
-            if _ % policy_freq == 0:
-                agent = agent.update_actor(batch, actor_rng)
-                critic_params_target = jax.tree_map(
-                    lambda target, live: (1 - agent.config["tau"]) * target
-                    + agent.config["tau"] * live,
-                    agent.critic_params_target,
-                    agent.critic.params,
-                )
-                actor_params_target = jax.tree_map(
-                    lambda target, live: (1 - agent.config["tau"]) * target
-                    + agent.config["tau"] * live,
-                    agent.actor_params_target,
-                    agent.actor.params,
-                )
-                agent = agent._replace(
-                    critic_params_target=critic_params_target,
-                    actor_params_target=actor_params_target,
-                )
-        return agent._replace(update_idx=agent.update_idx + 1)
+            rng, alpha_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
+
+            agent, critic_loss = agent.update_critic(batch, critic_rng)
+            agent, actor_loss = agent.update_actor(batch, actor_rng)
+            if alpha_lagrangian:
+                agent, alpha_loss = agent.update_alpha(batch, alpha_rng)
+            else:
+                alpha_loss = 0.0
+            new_target_critic = target_update(
+                agent.critic, agent.target_critic, agent.config["tau"]
+            )
+
+        return agent._replace(target_critic=new_target_critic), {}
 
     @jax.jit
     def get_action(
         agent,
         obs: jnp.ndarray,
-        low: float,
-        high: float,
     ) -> jnp.ndarray:
         action = agent.actor.apply_fn(agent.actor.params, obs, rng=None)
-        action = action.clip(low, high)
+        action = action.clip(-1.0, 1.0)
         return action
 
 
-def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
-    return model_def.init(*inputs)
-
-
-def create_trainer(
-    observation_dim, action_dim, max_action, rng, config
-) -> CQLTrainer:
+def create_trainer(observation_dim, action_dim, max_action, rng, config) -> CQLTrainer:
     critic_model = DoubleCritic(hidden_dims=config.hidden_dims)
     actor_model = NormalTanhPolicy(
         hidden_dims=config.hidden_dims,
         action_dim=action_dim,
-        log_std_min=config.log_std_min,
-        log_std_max=config.log_std_max,
         state_dependent_std=True,
         tanh_squash_distribution=True,
     )
-    rng, rng1, rng2 = jax.random.split(rng, 3)
-    # initialize critic and actor parameters
-    critic_params = init_params(
-        critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1]
+    rng, rng1, rng2, rng3 = jax.random.split(rng, 4)
+    # initialize critic
+    critic_params = critic_model.init(
+        rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim)
     )
-    critic_params_target = init_params(
-        critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1]
-    )
-
-    actor_params = init_params(actor_model, [rng2, jnp.zeros(observation_dim), rng2])
-    actor_params_target = init_params(
-        actor_model, [rng2, jnp.zeros(observation_dim), rng2]
-    )
-
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
         params=critic_params,
         tx=optax.adam(config.critic_lr),
     )
+    target_critic = TrainState.create(
+        apply_fn=critic_model.apply,
+        params=critic_params,
+        tx=optax.adam(learning_rate=config.critic_lr),
+    )
+
+    # initialize actor
+    actor_params = actor_model.init(rng2, jnp.zeros(observation_dim))
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_params,
         tx=optax.adam(config.actor_lr),
     )
 
+    log_entropy_alpha = Scalar(
+        np.log(0.1) if config.alpha_lagrangian is not None else np.log(config.sac_alpha)
+    )
+    log_entropy_alpha_train_state = TrainState.create(
+        apply_fn=log_entropy_alpha,
+        params=log_entropy_alpha.init(rng3),
+        tx=optax.adam(config.actor_lr),
+    )
+    """
+    log_conservative_alpha = Scalar(
+        np.log(1.0)
+        if config.cql_target_budget is not None
+        else np.log(config.cql_alpha)
+    )
+    log_conservative_alpha_train_state = TrainState.create(
+        apply_fn=log_conservative_alpha,
+        params=log_conservative_alpha.init(rng3),
+        tx=optax.adam(config.critic_lr),
+    )
+    """
+
     config = flax.core.FrozenDict(
         dict(
-            alpha=config.alpha,
-            policy_noise_std=config.policy_noise_std,
-            policy_noise_clip=config.policy_noise_clip,
-            gamma=config.gamma,
+            discount=config.discount,
+            alpha_multiplier=config.alpha_multiplier,
+            use_automatic_entropy_tuning=config.use_automatic_entropy_tuning,
+            backup_entropy=config.backup_entropy,
+            target_entropy=config.target_entropy,
             tau=config.tau,
-            batch_size=config.batch_size,
-            policy_freq=config.policy_freq,
+            cql_n_actions=config.cql_n_actions,
+            cql_clip_diff_min=config.cql_clip_diff_min,
+            cql_clip_diff_max=config.cql_clip_diff_max,
+            action_dim=action_dim,
+            cql_temperature=config.cql_temperature,
         )
     )
     return CQLTrainer(
         actor=actor_train_state,
         critic=critic_train_state,
-        actor_params_target=actor_params_target,
-        critic_params_target=critic_params_target,
-        update_idx=0,
+        target_critic=target_critic,
+        log_entropy_alpha=log_entropy_alpha_train_state,
         max_action=max_action,
         config=config,
     )
@@ -389,8 +512,6 @@ def evaluate(
             obs = jnp.array((obs - obs_mean) / obs_std)
             action = agent.get_action(
                 obs=obs,
-                low=env.action_space.low,
-                high=env.action_space.high,
             )
             action = action.reshape(-1)
             obs, rew, done, info = env.step(action)
@@ -427,7 +548,7 @@ if __name__ == "__main__":
         agent = agent.update_n_times(
             data,
             update_rng,
-            config.policy_freq,
+            config.alpha_lagrangian,
             config.batch_size,
             config.updates_per_epoch,
         )
