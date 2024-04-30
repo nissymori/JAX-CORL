@@ -24,9 +24,8 @@ class CQLConfig(BaseModel):
     env_name: str = "hopper-medium-expert-v2"
     max_steps: int = 1000000
     eval_interval: int = 10000
-    updates_per_epoch: int = (
-        16  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
-    )
+    updates_per_epoch: int = 8  # how many updates per epoch.
+
     num_test_rollouts: int = 5
     batch_size: int = 256
     data_size: int = 1000000
@@ -48,6 +47,7 @@ class CQLConfig(BaseModel):
     cql_temperature: float = 1.0
     alpha_lagrangian: bool = True
     cql_target_budget: Optional[float] = None
+    cql_alpha: float = 1.0
 
 
 conf_dict = OmegaConf.from_cli()
@@ -210,7 +210,9 @@ class CQLTrainer(NamedTuple):
     critic: TrainState
     target_critic: TrainState
     log_entropy_alpha: TrainState
+    log_conservative_alpha: TrainState
     max_action: float
+    action_dim: int
     config: flax.core.FrozenDict
 
     def update_alpha(agent, batch: Transition, rng: jax.random.PRNGKey):
@@ -249,7 +251,14 @@ class CQLTrainer(NamedTuple):
         new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
         return agent._replace(actor=new_actor), actor_loss
 
-    def update_critic(agent, batch: Transition, _rng: jax.random.PRNGKey):
+    def update_critic(
+        agent,
+        batch: Transition,
+        _rng: jax.random.PRNGKey,
+        batch_size: int,
+        action_dim: int,
+        cql_n_actions: int,
+    ):
         def get_cql_critic_loss(critic_params):
             q1, q2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
@@ -278,15 +287,15 @@ class CQLTrainer(NamedTuple):
             rand_actions = jax.random.uniform(
                 rand_rng,
                 shape=(
-                    agent.config["batch_size"],
-                    config.cql_n_actions,
-                    agent.config["action_dim"],
+                    batch_size,
+                    cql_n_actions,
+                    action_dim,
                 ),
                 minval=-1.0,
                 maxval=1.0,
             )  # (batch, n_a, a)
             # current actions
-            current_rngs = jax.random.split(current_rng, agent.config["cql_n_actions"])
+            current_rngs = jax.random.split(current_rng, cql_n_actions)
             current_dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
             current_actions, current_log_probs = jax.vmap(
                 current_dist.sample_and_log_prob
@@ -296,7 +305,7 @@ class CQLTrainer(NamedTuple):
             current_actions = jnp.swapaxes(current_actions, 0, 1)  # (batch, n_a, a)
             current_log_probs = jnp.swapaxes(current_log_probs, 0, 1)  # (batch, n_a)
             # next actions
-            next_rngs = jax.random.split(next_rng, agent.config["cql_n_actions"])
+            next_rngs = jax.random.split(next_rng, cql_n_actions)
             next_dist = agent.actor.apply_fn(
                 agent.actor.params, batch.next_observations
             )
@@ -308,7 +317,7 @@ class CQLTrainer(NamedTuple):
 
             # Q values
             repeated_obs = jnp.tile(
-                batch.observation[:, None, :], (1, cql_n_actions, 1)
+                batch.observations[:, None, :], (1, cql_n_actions, 1)
             )  # (batch, n_a, o)
             cql_q1_rand, cql_q2_rand = agent.critic.apply_fn(
                 critic_params, repeated_obs, rand_actions
@@ -321,7 +330,7 @@ class CQLTrainer(NamedTuple):
             )  # (batch, n_a, 1)
 
             with jax.ensure_compile_time_eval():
-                random_density = jnp.log(0.5 ** agent.config["action_dim"])
+                random_density = jnp.log(0.5**action_dim)
             # concatenate q values
             cql_cat_q1 = jnp.concatenate(
                 [
@@ -345,7 +354,7 @@ class CQLTrainer(NamedTuple):
                 jax.scipy.special.logsumexp(
                     cql_cat_q1 / agent.config["cql_temperature"], axis=1
                 )
-                * agent["config.cql_temperature"]
+                * agent.config["cql_temperature"]
             )  # (b, )
             cql_ood_q2 = (
                 jax.scipy.special.logsumexp(
@@ -379,13 +388,15 @@ class CQLTrainer(NamedTuple):
         new_critic, critic_loss = update_by_loss_grad(agent.critic, get_cql_critic_loss)
         return agent._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(3, 4, 5))
+    @partial(jax.jit, static_argnums=(3, 4, 5, 6, 7))
     def update_n_times(
         agent,
         data: Transition,
         rng: jax.random.PRNGKey,
         alpha_lagrangian: bool,
         batch_size: int,
+        action_dim: int,
+        cql_n_actions: int,
         n: int,
     ):  # TODO reduce arguments??
         for _ in range(n):
@@ -396,7 +407,9 @@ class CQLTrainer(NamedTuple):
             batch: Transition = jax.tree_map(lambda x: x[batch_idx], data)
             rng, alpha_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
 
-            agent, critic_loss = agent.update_critic(batch, critic_rng)
+            agent, critic_loss = agent.update_critic(
+                batch, critic_rng, batch_size, action_dim, cql_n_actions
+            )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
             if alpha_lagrangian:
                 agent, alpha_loss = agent.update_alpha(batch, alpha_rng)
@@ -454,36 +467,29 @@ def create_trainer(observation_dim, action_dim, max_action, rng, config) -> CQLT
         np.log(0.1) if config.alpha_lagrangian is not None else np.log(config.sac_alpha)
     )
     log_entropy_alpha_train_state = TrainState.create(
-        apply_fn=log_entropy_alpha,
+        apply_fn=log_entropy_alpha.apply,
         params=log_entropy_alpha.init(rng3),
         tx=optax.adam(config.actor_lr),
     )
-    """
     log_conservative_alpha = Scalar(
         np.log(1.0)
         if config.cql_target_budget is not None
         else np.log(config.cql_alpha)
     )
     log_conservative_alpha_train_state = TrainState.create(
-        apply_fn=log_conservative_alpha,
+        apply_fn=log_conservative_alpha.apply,
         params=log_conservative_alpha.init(rng3),
         tx=optax.adam(config.critic_lr),
     )
-    """
 
-    config = flax.core.FrozenDict(
+    cql_config = flax.core.FrozenDict(
         dict(
-            discount=config.discount,
-            alpha_multiplier=config.alpha_multiplier,
-            use_automatic_entropy_tuning=config.use_automatic_entropy_tuning,
-            backup_entropy=config.backup_entropy,
-            target_entropy=config.target_entropy,
-            tau=config.tau,
-            cql_n_actions=config.cql_n_actions,
-            cql_clip_diff_min=config.cql_clip_diff_min,
             cql_clip_diff_max=config.cql_clip_diff_max,
-            action_dim=action_dim,
+            cql_clip_diff_min=config.cql_clip_diff_min,
             cql_temperature=config.cql_temperature,
+            tau=config.tau,
+            discount=config.discount,
+            target_entropy=config.target_entropy,
         )
     )
     return CQLTrainer(
@@ -491,8 +497,10 @@ def create_trainer(observation_dim, action_dim, max_action, rng, config) -> CQLT
         critic=critic_train_state,
         target_critic=target_critic,
         log_entropy_alpha=log_entropy_alpha_train_state,
+        log_conservative_alpha=log_conservative_alpha_train_state,
         max_action=max_action,
-        config=config,
+        action_dim=action_dim,
+        config=cql_config,
     )
 
 
@@ -536,7 +544,7 @@ if __name__ == "__main__":
     data, obs_mean, obs_std = get_dataset(dataset, data_rng)
     agent = create_trainer(observation_dim, action_dim, max_action, model_rng, config)
 
-    wandb.init(project="train-TD3-BC", config=config)
+    wandb.init(project="train-CQL", config=config)
     epochs = int(
         config.max_steps // config.updates_per_epoch
     )  # we update multiple times per epoch
@@ -550,6 +558,8 @@ if __name__ == "__main__":
             update_rng,
             config.alpha_lagrangian,
             config.batch_size,
+            action_dim,
+            config.cql_n_actions,
             config.updates_per_epoch,
         )
         if steps % config.eval_interval == 0:
