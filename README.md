@@ -16,8 +16,11 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 
 # Report
 
-
-# Implementation policy
-1. Try to find working jax implementation (if not, find pytorch version).
-2. Put the necessary code into single file.
-3. Convert to Clean Jax code step by step.
+|env|AWAC|CQL|IQL|TD3+BC|
+|---|---|---|---|---|
+|halfcheetah-medium-expert-v2|   |   |   |   |
+|halfcheetah-medium-v2|   |   |   |   |
+|hopper-medium-expert-v2|   |   |   |   |
+|hopper-medium-v2|   |   |   |   |
+|walker2d-medium-expert-v2|   |   |   |   |
+|walker2d-medium-v2|   |   |   |   |
