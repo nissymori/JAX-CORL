@@ -24,15 +24,14 @@ class TD3BCConfig(BaseModel):
     max_steps: int = 1000000
     eval_interval: int = 10000
     updates_per_epoch: int = (
-        16  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
+        8  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
     )
     num_test_rollouts: int = 5
     batch_size: int = 256
     data_size: int = 1000000
     seed: int = 0
     # network config
-    num_hidden_layers: int = 2
-    num_hidden_units: int = 256
+    hidden_dims: Sequence[int] = (256, 256)
     critic_lr: float = 1e-3
     actor_lr: float = 1e-3
     # TD3-BC specific
@@ -52,48 +51,47 @@ def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
 
 
-class DoubleCritic(nn.Module):  # TODO use MLP class ?
-    num_hidden_units: int = 256
-    num_hidden_layers: int = 2
+class MLP(nn.Module):
+    hidden_dims: Sequence[int]
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
+    activate_final: bool = False
+    kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
+    add_layer_norm: bool = False
+    layer_norm_final: bool = False
 
     @nn.compact
-    def __call__(self, state, action, rng):
-        sa = jnp.concatenate([state, action], axis=-1)
-        x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(sa)
-        x_q = nn.LayerNorm()(x_q)
-        x_q = nn.relu(x_q)
-        for i in range(1, config.num_hidden_layers):
-            x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_q)
-            x_q = nn.LayerNorm()(x_q)
-            x_q = nn.relu(x_q)
-        q1 = nn.Dense(1, kernel_init=default_init())(x_q)
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        for i, hidden_dims in enumerate(self.hidden_dims):
+            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
+            if self.add_layer_norm:  # Add layer norm after activation
+                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    x = nn.LayerNorm()(x)
+            if (
+                i + 1 < len(self.hidden_dims) or self.activate_final
+            ):  # Add activation after layer norm
+                x = self.activations(x)
+        return x
 
-        x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(sa)
-        x_q = nn.LayerNorm()(x_q)
-        x_q = nn.relu(x_q)
-        for i in range(1, config.num_hidden_layers):
-            x_q = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_q)
-            x_q = nn.LayerNorm()(x_q)
-            x_q = nn.relu(x_q)
-        q2 = nn.Dense(1)(x_q)
+
+class DoubleCritic(nn.Module):  # TODO use MLP class ?
+    hidden_dims: Sequence[int]
+
+    @nn.compact
+    def __call__(self, state, action):
+        sa = jnp.concatenate([state, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
         return q1, q2
 
 
 class TD3Actor(nn.Module):  # TODO use MLP class ?
+    hidden_dims: Sequence[int]
     action_dim: int
     max_action: float
-    num_hidden_layers: int = 2
-    num_hidden_units: int = 256
 
     @nn.compact
-    def __call__(self, state, rng):
-        x_a = nn.relu(
-            nn.Dense(config.num_hidden_units, kernel_init=default_init())(state)
-        )
-        for i in range(1, config.num_hidden_layers):
-            x_a = nn.Dense(config.num_hidden_units, kernel_init=default_init())(x_a)
-            x_a = nn.relu(x_a)
-        action = nn.Dense(action_dim, kernel_init=default_init())(x_a)
+    def __call__(self, state):
+        action = MLP((*self.hidden_dims, self.action_dim))(state)
         action = self.max_action * jnp.tanh(
             action
         )  # scale to [-max_action, max_action]
@@ -139,6 +137,15 @@ def get_dataset(
     return data, obs_mean, obs_std
 
 
+def target_update(
+    model: TrainState, target_model: TrainState, tau: float
+) -> TrainState:
+    new_target_params = jax.tree_map(
+        lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
+    )
+    return target_model.replace(params=new_target_params)
+
+
 def update_by_loss_grad(
     train_state: TrainState, loss_fn: Callable
 ) -> Tuple[TrainState, jnp.ndarray]:
@@ -151,20 +158,18 @@ def update_by_loss_grad(
 class TD3BCTrainer(NamedTuple):
     actor: TrainState
     critic: TrainState
-    actor_params_target: flax.core.frozen_dict.FrozenDict
-    critic_params_target: flax.core.frozen_dict.FrozenDict
+    target_actor: TrainState
+    target_critic: TrainState
     update_idx: jnp.int32
     max_action: float
     config: flax.core.FrozenDict
 
     def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
         def actor_loss_fn(actor_params):
-            predicted_action = agent.actor.apply_fn(
-                actor_params, batch.states, rng=None
-            )
+            predicted_action = agent.actor.apply_fn(actor_params, batch.states)
             critic_params = jax.lax.stop_gradient(agent.critic.params)
             q_value, _ = agent.critic.apply_fn(
-                critic_params, batch.states, predicted_action, rng=None
+                critic_params, batch.states, predicted_action
             )
 
             mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
@@ -180,10 +185,10 @@ class TD3BCTrainer(NamedTuple):
     def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
         def critic_loss_fn(critic_params):
             q_pred_1, q_pred_2 = agent.critic.apply_fn(
-                critic_params, batch.states, batch.actions, rng=None
+                critic_params, batch.states, batch.actions
             )
-            target_next_action = agent.actor.apply_fn(
-                agent.actor_params_target, batch.next_states, rng=None
+            target_next_action = agent.target_actor.apply_fn(
+                agent.target_actor.params, batch.next_states
             )
             policy_noise = (
                 agent.config["policy_noise_std"]
@@ -196,11 +201,8 @@ class TD3BCTrainer(NamedTuple):
             target_next_action = target_next_action.clip(
                 -agent.max_action, agent.max_action
             )
-            q_next_1, q_next_2 = agent.critic.apply_fn(
-                agent.critic_params_target,
-                batch.next_states,
-                target_next_action,
-                rng=None,
+            q_next_1, q_next_2 = agent.target_critic.apply_fn(
+                agent.target_critic.params, batch.next_states, target_next_action
             )
             target = batch.rewards[..., None] + agent.config["gamma"] * jnp.minimum(
                 q_next_1, q_next_2
@@ -240,21 +242,15 @@ class TD3BCTrainer(NamedTuple):
             agent = agent.update_critic(batch, critic_rng)
             if _ % policy_freq == 0:
                 agent = agent.update_actor(batch, actor_rng)
-                critic_params_target = jax.tree_map(
-                    lambda target, live: (1 - agent.config["tau"]) * target
-                    + agent.config["tau"] * live,
-                    agent.critic_params_target,
-                    agent.critic.params,
+                new_target_critic = target_update(
+                    agent.critic, agent.target_critic, agent.config["tau"]
                 )
-                actor_params_target = jax.tree_map(
-                    lambda target, live: (1 - agent.config["tau"]) * target
-                    + agent.config["tau"] * live,
-                    agent.actor_params_target,
-                    agent.actor.params,
+                new_target_actor = target_update(
+                    agent.actor, agent.target_actor, agent.config["tau"]
                 )
                 agent = agent._replace(
-                    critic_params_target=critic_params_target,
-                    actor_params_target=actor_params_target,
+                    target_critic=new_target_critic,
+                    target_actor=new_target_actor,
                 )
         return agent._replace(update_idx=agent.update_idx + 1)
 
@@ -265,50 +261,52 @@ class TD3BCTrainer(NamedTuple):
         low: float,
         high: float,
     ) -> jnp.ndarray:
-        action = agent.actor.apply_fn(agent.actor.params, obs, rng=None)
+        action = agent.actor.apply_fn(agent.actor.params, obs)
         action = action.clip(low, high)
         return action
-
-
-def init_params(model_def: nn.Module, inputs: Sequence[jnp.ndarray]):
-    return model_def.init(*inputs)
 
 
 def create_trainer(
     observation_dim, action_dim, max_action, rng, config
 ) -> TD3BCTrainer:
     critic_model = DoubleCritic(
-        num_hidden_layers=config.num_hidden_layers,
-        num_hidden_units=config.num_hidden_units,
+        hidden_dims=config.hidden_dims,
     )
     actor_model = TD3Actor(
         action_dim=action_dim,
         max_action=max_action,
-        num_hidden_layers=config.num_hidden_layers,
-        num_hidden_units=config.num_hidden_units,
+        hidden_dims=config.hidden_dims,
     )
-    rng, rng1, rng2 = jax.random.split(rng, 3)
+    rng, critic_rng, actor_rng = jax.random.split(rng, 3)
     # initialize critic and actor parameters
-    critic_params = init_params(
-        critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1]
+    critic_params = critic_model.init(
+        critic_rng, jnp.zeros(observation_dim), jnp.zeros(action_dim)
     )
-    critic_params_target = init_params(
-        critic_model, [rng1, jnp.zeros(observation_dim), jnp.zeros(action_dim), rng1]
+    critic_params_target = critic_model.init(
+        critic_rng, jnp.zeros(observation_dim), jnp.zeros(action_dim)
     )
 
-    actor_params = init_params(actor_model, [rng2, jnp.zeros(observation_dim), rng2])
-    actor_params_target = init_params(
-        actor_model, [rng2, jnp.zeros(observation_dim), rng2]
-    )
+    actor_params = actor_model.init(actor_rng, jnp.zeros(observation_dim))
+    actor_params_target = actor_model.init(actor_rng, jnp.zeros(observation_dim))
 
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
         params=critic_params,
         tx=optax.adam(config.critic_lr),
     )
+    target_critic_train_state: TrainState = TrainState.create(
+        apply_fn=critic_model.apply,
+        params=critic_params_target,
+        tx=optax.adam(config.critic_lr),
+    )
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_params,
+        tx=optax.adam(config.actor_lr),
+    )
+    target_actor_train_state: TrainState = TrainState.create(
+        apply_fn=actor_model.apply,
+        params=actor_params_target,
         tx=optax.adam(config.actor_lr),
     )
 
@@ -326,8 +324,8 @@ def create_trainer(
     return TD3BCTrainer(
         actor=actor_train_state,
         critic=critic_train_state,
-        actor_params_target=actor_params_target,
-        critic_params_target=critic_params_target,
+        target_actor=target_actor_train_state,
+        target_critic=target_critic_train_state,
         update_idx=0,
         max_action=max_action,
         config=config,

@@ -3,10 +3,9 @@ from functools import partial
 from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
-import distrax
 import gym
 import jax
 import jax.numpy as jnp
@@ -14,6 +13,7 @@ import numpy as np
 import optax
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tqdm import tqdm

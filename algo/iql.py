@@ -1,17 +1,19 @@
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union, NamedTuple
-import numpy as np
-import jax.numpy as jnp
-import jax
+from functools import partial
+from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
+                    Union)
+
+import d4rl
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
-import optax
-from functools import partial
-import wandb
 import gym
-import distrax
-import d4rl
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
 import tqdm
+import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -39,6 +41,7 @@ class IQLConfig(BaseModel):
     expectile: float = 0.7  # for Hopper 0.5
     temperature: float = 3.0  # for Hopper 6.0
     tau: float = 0.005
+    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -54,7 +57,6 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False  # TODO add layer norm
 
     def setup(self):
         self.layers = [
@@ -77,9 +79,7 @@ class Critic(nn.Module):
     @nn.compact
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP(
-            (*self.hidden_dims, 1), activations=self.activations, add_layer_norm=True
-        )(inputs)
+        critic = MLP((*self.hidden_dims, 1), activations=self.activations)(inputs)
         return jnp.squeeze(critic, -1)
 
 
@@ -104,17 +104,15 @@ class ValueCritic(nn.Module):
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        critic = MLP((*self.hidden_dims, 1), add_layer_norm=True)(observations)
+        critic = MLP((*self.hidden_dims, 1))(observations)
         return jnp.squeeze(critic, -1)
 
 
-class Policy(nn.Module):
+class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     log_std_min: Optional[float] = -10
     log_std_max: Optional[float] = 2
-    tanh_squash_distribution: bool = False
-    state_dependent_std: bool = True
     final_fc_init_scale: float = 1e-3
 
     @nn.compact
@@ -129,29 +127,13 @@ class Policy(nn.Module):
         means = nn.Dense(
             self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
         )(outputs)
-        if self.state_dependent_std:
-            log_stds = nn.Dense(
-                self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
-            )(outputs)
-        else:
-            log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
-
+        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
 
         distribution = distrax.MultivariateNormalDiag(
             loc=means, scale_diag=jnp.exp(log_stds) * temperature
         )
-        if self.tanh_squash_distribution:
-            distribution = TransformedWithMode(
-                distribution, distrax.Block(distrax.Tanh(), ndims=1)
-            )
-
         return distribution
-
-
-class TransformedWithMode(distrax.Transformed):
-    def mode(self) -> jnp.ndarray:
-        return self.bijector.forward(self.distribution.mode())
 
 
 class Transition(NamedTuple):
@@ -322,12 +304,10 @@ def create_trainer(
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
-    actor_def = Policy(
+    actor_model = GaussianPolicy(
         config.hidden_dims,
         action_dim=action_dim,
         log_std_min=-5.0,
-        state_dependent_std=False,
-        tanh_squash_distribution=False,
     )
 
     if opt_decay_schedule == "cosine":
@@ -338,28 +318,27 @@ def create_trainer(
     else:
         actor_tx = optax.adam(learning_rate=config.actor_lr)
 
-    actor_params = actor_def.init(actor_key, observations)
+    actor_params = actor_model.init(actor_key, observations)
     actor = TrainState.create(
-        apply_fn=actor_def.apply, params=actor_params, tx=actor_tx
+        apply_fn=actor_model.apply, params=actor_params, tx=actor_tx
     )
     # initialize critic
-    critic_def = ensemblize(Critic, num_qs=2)(config.hidden_dims)
-    critic_params = critic_def.init(critic_key, observations, actions)
+    critic_model = ensemblize(Critic, num_qs=2)(config.hidden_dims)
     critic = TrainState.create(
-        apply_fn=critic_def.apply,
-        params=critic_params,
+        apply_fn=critic_model.apply,
+        params=critic_model.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
-        apply_fn=critic_def.apply,
-        params=critic_params,
+        apply_fn=critic_model.apply,
+        params=critic_model.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # initialize value
-    value_def = ValueCritic(config.hidden_dims)
-    value_params = value_def.init(value_key, observations)
+    value_model = ValueCritic(config.hidden_dims)
+    value_params = value_model.init(value_key, observations)
     value = TrainState.create(
-        apply_fn=value_def.apply,
+        apply_fn=value_model.apply,
         params=value_params,
         tx=optax.adam(learning_rate=config.value_lr),
     )
@@ -409,7 +388,8 @@ def get_normalization(dataset: Transition):
 
 
 if __name__ == "__main__":
-    wandb.init(config=config, project="iql")
+    if not config.disable_wandb:
+        wandb.init(config=config, project="iql")
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset: Transition = get_dataset(env, config)
@@ -432,7 +412,8 @@ if __name__ == "__main__":
         )
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            wandb.log(train_metrics, step=i)
+            if not config.disable_wandb:
+                wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
@@ -443,4 +424,5 @@ if __name__ == "__main__":
             )
             print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
-            wandb.log(eval_metrics, step=i)
+            if not config.disable_wandb:
+                wandb.log(eval_metrics, step=i)
