@@ -1,17 +1,19 @@
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union, NamedTuple
-import numpy as np
-import jax.numpy as jnp
-import jax
+from functools import partial
+from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
+                    Union)
+
+import d4rl
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
-import optax
-from functools import partial
-import wandb
 import gym
-import distrax
-import d4rl
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
 import tqdm
+import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
