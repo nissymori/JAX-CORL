@@ -41,6 +41,7 @@ class IQLConfig(BaseModel):
     expectile: float = 0.7  # for Hopper 0.5
     temperature: float = 3.0  # for Hopper 6.0
     tau: float = 0.005
+    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -56,49 +57,32 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False  # TODO add layer norm
-
-    def setup(self):
-        self.layers = [
-            nn.Dense(size, kernel_init=self.kernel_init) for size in self.hidden_dims
-        ]
+    add_layer_norm: bool = False
+    layer_norm_final: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i + 1 < len(self.layers) or self.activate_final:
+        for i, hidden_dims in enumerate(self.hidden_dims):
+            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
+            if self.add_layer_norm:  # Add layer norm after activation
+                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    x = nn.LayerNorm()(x)
+            if (
+                i + 1 < len(self.hidden_dims) or self.activate_final
+            ):  # Add activation after layer norm
                 x = self.activations(x)
         return x
 
 
-class Critic(nn.Module):
+class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
 
     @nn.compact
-    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
-        inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP(
-            (*self.hidden_dims, 1), activations=self.activations, add_layer_norm=True
-        )(inputs)
-        return jnp.squeeze(critic, -1)
-
-
-def ensemblize(cls, num_qs, out_axes=0, **kwargs):
-    """
-    Ensemblize a module by creating `num_qs` instances of the module
-    """
-    split_rngs = kwargs.pop("split_rngs", {})
-    return nn.vmap(
-        cls,
-        variable_axes={"params": 0},
-        split_rngs={**split_rngs, "params": True},
-        in_axes=None,
-        out_axes=out_axes,
-        axis_size=num_qs,
-        **kwargs,
-    )
+    def __call__(self, state, action):
+        sa = jnp.concatenate([state, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        return q1, q2
 
 
 class ValueCritic(nn.Module):
@@ -110,7 +94,7 @@ class ValueCritic(nn.Module):
         return jnp.squeeze(critic, -1)
 
 
-class Policy(nn.Module):
+class NormalTanhPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     log_std_min: Optional[float] = -10
@@ -324,7 +308,7 @@ def create_trainer(
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
-    actor_def = Policy(
+    actor_model = NormalTanhPolicy(
         config.hidden_dims,
         action_dim=action_dim,
         log_std_min=-5.0,
@@ -340,20 +324,20 @@ def create_trainer(
     else:
         actor_tx = optax.adam(learning_rate=config.actor_lr)
 
-    actor_params = actor_def.init(actor_key, observations)
+    actor_params = actor_model.init(actor_key, observations)
     actor = TrainState.create(
-        apply_fn=actor_def.apply, params=actor_params, tx=actor_tx
+        apply_fn=actor_model.apply, params=actor_params, tx=actor_tx
     )
     # initialize critic
-    critic_def = ensemblize(Critic, num_qs=2)(config.hidden_dims)
-    critic_params = critic_def.init(critic_key, observations, actions)
+    critic_model = DoubleCritic(config.hidden_dims)
+    critic_params = critic_model.init(critic_key, observations, actions)
     critic = TrainState.create(
-        apply_fn=critic_def.apply,
+        apply_fn=critic_model.apply,
         params=critic_params,
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
-        apply_fn=critic_def.apply,
+        apply_fn=critic_model.apply,
         params=critic_params,
         tx=optax.adam(learning_rate=config.critic_lr),
     )
@@ -411,7 +395,8 @@ def get_normalization(dataset: Transition):
 
 
 if __name__ == "__main__":
-    wandb.init(config=config, project="iql")
+    if not config.disable_wandb:
+        wandb.init(config=config, project="iql")
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset: Transition = get_dataset(env, config)
@@ -434,7 +419,8 @@ if __name__ == "__main__":
         )
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            wandb.log(train_metrics, step=i)
+            if not config.disable_wandb:
+                wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
@@ -445,4 +431,5 @@ if __name__ == "__main__":
             )
             print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
-            wandb.log(eval_metrics, step=i)
+            if not config.disable_wandb:
+                wandb.log(eval_metrics, step=i)
