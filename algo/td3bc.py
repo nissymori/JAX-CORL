@@ -41,7 +41,6 @@ class TD3BCConfig(BaseModel):
     policy_noise_std: float = 0.2  # std of policy noise
     policy_noise_clip: float = 0.5  # clip policy noise
     gamma: float = 0.99  # discount factor
-    add_layer_norm: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -76,13 +75,12 @@ class MLP(nn.Module):
 
 class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
-    add_layer_norm: bool = True
 
     @nn.compact
     def __call__(self, state, action):
         sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=self.add_layer_norm)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=self.add_layer_norm)(sa)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
         return q1, q2
 
 
@@ -273,7 +271,6 @@ def create_trainer(
 ) -> TD3BCTrainer:
     critic_model = DoubleCritic(
         hidden_dims=config.hidden_dims,
-        add_layer_norm=config.add_layer_norm,
     )
     actor_model = TD3Actor(
         action_dim=action_dim,

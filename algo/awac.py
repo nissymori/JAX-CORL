@@ -58,11 +58,16 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
+    add_layer_norm: bool = False
+    layer_norm_final: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         for i, hidden_dims in enumerate(self.hidden_dims):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
+            if self.add_layer_norm:  # Add layer norm after activation
+                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    x = nn.LayerNorm()(x)
             if (
                 i + 1 < len(self.hidden_dims) or self.activate_final
             ):  # Add activation after layer norm
@@ -70,33 +75,17 @@ class MLP(nn.Module):
         return x
 
 
-class Critic(nn.Module):
+class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
-    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
 
     @nn.compact
-    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
-        inputs = jnp.concatenate([observations, actions], -1)
-        critic = MLP((*self.hidden_dims, 1), activations=self.activations)(inputs)
-        return jnp.squeeze(critic, -1)
+    def __call__(self, state, action):
+        sa = jnp.concatenate([state, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        return q1, q2
 
-
-def ensemblize(cls, num_qs, out_axes=0, **kwargs):
-    """
-    Ensemblize a module by creating `num_qs` instances of the module
-    """
-    split_rngs = kwargs.pop("split_rngs", {})
-    return nn.vmap(
-        cls,
-        variable_axes={"params": 0},
-        split_rngs={**split_rngs, "params": True},
-        in_axes=None,
-        out_axes=out_axes,
-        axis_size=num_qs,
-        **kwargs,
-    )
-
-class NormalTanhPolicy(nn.Module):
+class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     log_std_min: Optional[float] = -20.0
@@ -167,7 +156,15 @@ def get_dataset(
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= config.data_size
     dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
-    return dataset
+
+    # normalize states
+    state_mean = dataset.observations.mean(0)
+    state_std = dataset.observations.std(0) + 1e-6
+    dataset = dataset._replace(
+        observations=(dataset.observations - state_mean) / state_std,
+        next_observations=(dataset.next_observations - state_mean) / state_std,
+    )
+    return dataset, state_mean, state_std
 
 
 def target_update(
@@ -294,7 +291,7 @@ def create_trainer(
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
-    actor_model = NormalTanhPolicy(
+    actor_model = GaussianPolicy(
         config.actor_hidden_dims,
         action_dim=action_dim,
     )
@@ -306,7 +303,7 @@ def create_trainer(
         tx=optax.adam(learning_rate=config.actor_lr),
     )
     # initialize critic
-    critic_model = ensemblize(Critic, num_qs=2)(hidden_dims=config.critic_hidden_dims)
+    critic_model = DoubleCritic(config.critic_hidden_dims)
     critic = TrainState.create(
         apply_fn=critic_model.apply,
         params=critic_model.init(critic_key, observations, actions),
@@ -335,12 +332,13 @@ def create_trainer(
     )
 
 
-def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
+def evaluate(policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
         observation, done = env.reset(), False
         while not done:
+            observation = (observation - mean) / std
             action = policy_fn(observation)
             observation, rew, done, info = env.step(action)
             episode_return += rew
@@ -353,7 +351,7 @@ if __name__ == "__main__":
         wandb.init(config=config, project="AWAC")
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset = get_dataset(env, config)
+    dataset, mean, std = get_dataset(env, config)
 
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent: AWACTrainer = create_trainer(
@@ -381,7 +379,7 @@ if __name__ == "__main__":
             policy_fn = partial(
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
-            normalized_score = evaluate(policy_fn, env, config.eval_episodes)
+            normalized_score = evaluate(policy_fn, env, config.eval_episodes, mean, std)
             print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
             if not config.disable_wandb:
