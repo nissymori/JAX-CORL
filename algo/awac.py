@@ -58,50 +58,35 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False  # TODO add layer norm
-
-    def setup(self):
-        self.layers = [
-            nn.Dense(size, kernel_init=self.kernel_init) for size in self.hidden_dims
-        ]
+    add_layer_norm: bool = False
+    layer_norm_final: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i + 1 < len(self.layers) or self.activate_final:
+        for i, hidden_dims in enumerate(self.hidden_dims):
+            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
+            if self.add_layer_norm:  # Add layer norm after activation
+                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    x = nn.LayerNorm()(x)
+            if (
+                i + 1 < len(self.hidden_dims) or self.activate_final
+            ):  # Add activation after layer norm
                 x = self.activations(x)
         return x
 
 
 class DoubleCritic(nn.Module):  # TODO use MLP class ?
-    num_hidden_units: int = 256
-    num_hidden_layers: int = 2
+    hidden_dims: Sequence[int]
 
     @nn.compact
     def __call__(self, state, action):
         sa = jnp.concatenate([state, action], axis=-1)
-        x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(sa)
-        x_q = nn.LayerNorm()(x_q)
-        x_q = nn.relu(x_q)
-        for i in range(1, self.num_hidden_layers):
-            x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(x_q)
-            x_q = nn.LayerNorm()(x_q)
-            x_q = nn.relu(x_q)
-        q1 = nn.Dense(1, kernel_init=default_init())(x_q)
-
-        x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(sa)
-        x_q = nn.LayerNorm()(x_q)
-        x_q = nn.relu(x_q)
-        for i in range(1, self.num_hidden_layers):
-            x_q = nn.Dense(self.num_hidden_units, kernel_init=default_init())(x_q)
-            x_q = nn.LayerNorm()(x_q)
-            x_q = nn.relu(x_q)
-        q2 = nn.Dense(1)(x_q)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
         return q1, q2
 
 
-class Policy(nn.Module):
+class NormalTanhPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     log_std_min: Optional[float] = -20.0

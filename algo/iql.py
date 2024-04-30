@@ -57,32 +57,46 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False
-    layer_norm_final: bool = False
+
+    def setup(self):
+        self.layers = [
+            nn.Dense(size, kernel_init=self.kernel_init) for size in self.hidden_dims
+        ]
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, hidden_dims in enumerate(self.hidden_dims):
-            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
-            if self.add_layer_norm:  # Add layer norm after activation
-                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
-                    x = nn.LayerNorm()(x)
-            if (
-                i + 1 < len(self.hidden_dims) or self.activate_final
-            ):  # Add activation after layer norm
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i + 1 < len(self.layers) or self.activate_final:
                 x = self.activations(x)
         return x
 
 
-class DoubleCritic(nn.Module):  # TODO use MLP class ?
+class Critic(nn.Module):
     hidden_dims: Sequence[int]
+    activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
 
     @nn.compact
-    def __call__(self, state, action):
-        sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        return q1, q2
+    def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
+        inputs = jnp.concatenate([observations, actions], -1)
+        critic = MLP((*self.hidden_dims, 1), activations=self.activations)(inputs)
+        return jnp.squeeze(critic, -1)
+
+
+def ensemblize(cls, num_qs, out_axes=0, **kwargs):
+    """
+    Ensemblize a module by creating `num_qs` instances of the module
+    """
+    split_rngs = kwargs.pop("split_rngs", {})
+    return nn.vmap(
+        cls,
+        variable_axes={"params": 0},
+        split_rngs={**split_rngs, "params": True},
+        in_axes=None,
+        out_axes=out_axes,
+        axis_size=num_qs,
+        **kwargs,
+    )
 
 
 class ValueCritic(nn.Module):
@@ -90,17 +104,15 @@ class ValueCritic(nn.Module):
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        critic = MLP((*self.hidden_dims, 1), add_layer_norm=True)(observations)
+        critic = MLP((*self.hidden_dims, 1))(observations)
         return jnp.squeeze(critic, -1)
 
 
-class NormalTanhPolicy(nn.Module):
+class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     log_std_min: Optional[float] = -10
     log_std_max: Optional[float] = 2
-    tanh_squash_distribution: bool = False
-    state_dependent_std: bool = True
     final_fc_init_scale: float = 1e-3
 
     @nn.compact
@@ -115,29 +127,13 @@ class NormalTanhPolicy(nn.Module):
         means = nn.Dense(
             self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
         )(outputs)
-        if self.state_dependent_std:
-            log_stds = nn.Dense(
-                self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
-            )(outputs)
-        else:
-            log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
-
+        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
 
         distribution = distrax.MultivariateNormalDiag(
             loc=means, scale_diag=jnp.exp(log_stds) * temperature
         )
-        if self.tanh_squash_distribution:
-            distribution = TransformedWithMode(
-                distribution, distrax.Block(distrax.Tanh(), ndims=1)
-            )
-
         return distribution
-
-
-class TransformedWithMode(distrax.Transformed):
-    def mode(self) -> jnp.ndarray:
-        return self.bijector.forward(self.distribution.mode())
 
 
 class Transition(NamedTuple):
@@ -308,12 +304,10 @@ def create_trainer(
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
-    actor_model = NormalTanhPolicy(
+    actor_model = GaussianPolicy(
         config.hidden_dims,
         action_dim=action_dim,
         log_std_min=-5.0,
-        state_dependent_std=False,
-        tanh_squash_distribution=False,
     )
 
     if opt_decay_schedule == "cosine":
@@ -329,23 +323,22 @@ def create_trainer(
         apply_fn=actor_model.apply, params=actor_params, tx=actor_tx
     )
     # initialize critic
-    critic_model = DoubleCritic(config.hidden_dims)
-    critic_params = critic_model.init(critic_key, observations, actions)
+    critic_model = ensemblize(Critic, num_qs=2)(config.hidden_dims)
     critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_params,
+        params=critic_model.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_params,
+        params=critic_model.init(critic_key, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # initialize value
-    value_def = ValueCritic(config.hidden_dims)
-    value_params = value_def.init(value_key, observations)
+    value_model = ValueCritic(config.hidden_dims)
+    value_params = value_model.init(value_key, observations)
     value = TrainState.create(
-        apply_fn=value_def.apply,
+        apply_fn=value_model.apply,
         params=value_params,
         tx=optax.adam(learning_rate=config.value_lr),
     )
