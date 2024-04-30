@@ -422,13 +422,18 @@ class CQLTrainer(NamedTuple):
         return agent._replace(target_critic=new_target_critic), {}
 
     @jax.jit
-    def get_action(
+    def sample_actions(
         agent,
-        obs: jnp.ndarray,
+        observations: np.ndarray,
+        *,
+        seed: jax.random.PRNGKey,
+        temperature: float = 1.0,
     ) -> jnp.ndarray:
-        action = agent.actor.apply_fn(agent.actor.params, obs, temperature=0.0)
-        action = action.clip(-1.0, 1.0)
-        return action
+        actions = agent.actor.apply_fn(
+            agent.actor.params, observations, temperature=temperature
+        ).sample(seed=seed)
+        actions = jnp.clip(actions, -1.0, 1.0)
+        return actions
 
 
 def create_trainer(observation_dim, action_dim, max_action, rng, config) -> CQLTrainer:
@@ -518,8 +523,8 @@ def evaluate(
         episode_rew = 0.0
         while not done:
             obs = jnp.array((obs - obs_mean) / obs_std)
-            action = agent.get_action(
-                obs=obs,
+            action = agent.sample_actions(
+                obs, seed=jax.random.PRNGKey(0), temperature=0.0
             )
             action = action.reshape(-1)
             obs, rew, done, info = env.step(action)
