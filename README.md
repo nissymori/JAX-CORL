@@ -5,12 +5,14 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 💠 Focus on **a few important algorithms**: we do not cover all algos. in [CORL](https://github.com/tinkoff-ai/CORL). Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms)
 
 # Algorithms
-|Algorithm|implementation|training time|training time in corl|
-|---|---|---|---|
-|AWAC| [algo/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/awac.py) | | | 
-|CQL| [algo/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/cql.py)  | | |   
-|IQL|  [algo/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/iql.py)   |   |   |   
-|TD3-BC| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |   |   |   
+|Algorithm|implementation|training time|
+|---|---|---|
+|AWAC| [algo/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/awac.py) ||
+|IQL|  [algo/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/iql.py)   || 
+|TD3-BC| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  ||  
+|CQL| 🚧   |-|   
+|[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-| 
+
 
 
 
