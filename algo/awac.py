@@ -4,19 +4,18 @@ from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
+import d4rl
+import distrax
+import flax
+import flax.linen as nn
+import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
-import flax
-import flax.linen as nn
-from flax.training.train_state import TrainState
 import optax
-import distrax
-import gym
-import d4rl
-
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -301,7 +300,6 @@ def create_trainer(
         config.actor_hidden_dims,
         action_dim=action_dim,
     )
-
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_model.init(actor_rng, observations),
@@ -319,7 +317,6 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-
     config = flax.core.FrozenDict(
         dict(
             discount=config.discount,

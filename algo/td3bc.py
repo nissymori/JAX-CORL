@@ -2,18 +2,17 @@ from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
+import d4rl
+import flax
+import flax.linen as nn
+import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
-import flax
-import flax.linen as nn
-from flax.training.train_state import TrainState
 import optax
-import gym
-import d4rl
-
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -295,8 +294,8 @@ def create_trainer(
         hidden_dims=config.hidden_dims,
     )
     rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-    
-    # initialize critic and actor parameters
+
+    # initialize critic
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
         params=critic_model.init(critic_rng, observations, actions),
@@ -307,6 +306,8 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
+
+    # initialize actor
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_model.init(actor_rng, observations),
