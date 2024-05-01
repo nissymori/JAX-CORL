@@ -79,7 +79,9 @@ class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, observation: jnp.ndarray, action: jnp.ndarray):
+    def __call__(
+        self, observation: jnp.ndarray, action: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         x = jnp.concatenate([observation, action], axis=-1)
         q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
@@ -92,7 +94,7 @@ class TD3Actor(nn.Module):
     max_action: float = 1.0  # In D4RL, action is scaled to [-1, 1]
 
     @nn.compact
-    def __call__(self, observation: jnp.ndarray):
+    def __call__(self, observation: jnp.ndarray) -> jnp.ndarray:
         action = MLP((*self.hidden_dims, self.action_dim))(observation)
         action = self.max_action * jnp.tanh(
             action
