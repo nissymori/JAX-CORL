@@ -52,5 +52,8 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 ```
 
 # Credits
-I would like to thank [@JohannesAck](https://github.com/johannesack) for his TD3-BC code base and helpful advices.
+- This project is inspired by [CORL](https://github.com/tinkoff-ai/CORL), a clean single-file implementations of offline RL algorithm in pytorch.
+- I would like to thank [@JohannesAck](https://github.com/johannesack) for his TD3-BC code base and helpful advices.
+- The IQL implementation is based on [implicit_q_learning](https://github.com/ikostrikov/implicit_q_learning).
+- AWAC implementation is based on [jaxrl](https://github.com/ikostrikov/jaxrl) and[CORL](https://github.com/tinkoff-ai/CORL).
 
