@@ -45,7 +45,6 @@ class AWACConfig(BaseModel):
     exp_adv_max: float = 100.0
     tau: float = 0.005
     discount: float = 0.99
-    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -163,7 +162,7 @@ def get_dataset(
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
-    dataset = jax.tree_map(lambda x: x[: data_size], dataset)
+    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
 
     # normalize states
     obs_mean = dataset.observations.mean(0)
