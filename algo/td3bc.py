@@ -40,6 +40,7 @@ class TD3BCConfig(BaseModel):
     policy_noise_clip: float = 0.5  # clip policy noise
     tau: float = 0.005  # target network update rate
     discount: float = 0.99  # discount factor
+    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -232,7 +233,7 @@ class TD3BCTrainer(NamedTuple):
         new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
         return agent._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(2, 3, 4))
+    @partial(jax.jit, static_argnums=(3, 4, 5))
     def update_n_times(
         agent,
         data: Transition,
@@ -334,7 +335,7 @@ def create_trainer(observations, actions, config) -> TD3BCTrainer:
 
 
 def evaluate(
-    agent: TD3BCTrainer,
+    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
     env: gym.Env,
     num_episodes: int,
     obs_mean,
@@ -346,7 +347,7 @@ def evaluate(
         observation, done = env.reset(), False
         while not done:
             observation = (observation - obs_mean) / obs_std
-            action = agent.get_actions(observation)
+            action = policy_fn(observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
         episode_returns.append(episode_return)
@@ -379,19 +380,17 @@ if __name__ == "__main__":
             config.batch_size,
             config.n_updates,
         )
-        if i % config.log_interval == 0:
+        if _ % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             if not config.disable_wandb:
                 wandb.log(train_metrics, step=i)
 
-        if i % config.eval_interval == 0:
-            policy_fn = partial(
-                agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
-            )
+        if _ % config.eval_interval == 0:
+            policy_fn = agent.get_actions
             normalized_score = evaluate(
-                policy_fn, env, num_episodes=config.eval_episodes
+                policy_fn, env, num_episodes=config.eval_episodes, obs_mean=obs_mean, obs_std=obs_std
             )
-            print(i, normalized_score)
+            print(_, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
             if not config.disable_wandb:
                 wandb.log(eval_metrics, step=i)
