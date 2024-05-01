@@ -1,5 +1,6 @@
 # https://github.com/ikostrikov/jaxrl
 # https://arxiv.org/abs/2006.09359
+import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
@@ -24,6 +25,8 @@ Params = flax.core.FrozenDict[str, Any]
 
 class AWACConfig(BaseModel):
     # GENERAL
+    algo: str = "AWAC"
+    project: str = "train-AWAC"
     env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = np.random.choice(1000000)
     data_size: int = int(1e6)
@@ -44,7 +47,6 @@ class AWACConfig(BaseModel):
     exp_adv_max: float = 100.0
     tau: float = 0.005
     discount: float = 0.99
-    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -155,12 +157,14 @@ def get_dataset(
     )
 
     # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
+    # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
-    assert len(dataset.observations) >= config.data_size
-    dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
 
     # normalize states
     obs_mean = dataset.observations.mean(0)
@@ -335,14 +339,18 @@ def create_trainer(
 
 
 def evaluate(
-    policy_fn: Callable, env: gym.Env, num_episodes: int, mean: float, std: float
+    policy_fn: Callable,
+    env: gym.Env,
+    num_episodes: int,
+    obs_mean: float,
+    obs_std: float,
 ) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
         observation, done = env.reset(), False
         while not done:
-            observation = (observation - mean) / std
+            observation = (observation - obs_mean) / obs_std
             action = policy_fn(observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
@@ -351,11 +359,10 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    if not config.disable_wandb:
-        wandb.init(config=config, project="AWAC")
+    wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset, mean, std = get_dataset(env, config)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
 
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent: AWACTrainer = create_trainer(
@@ -365,6 +372,7 @@ if __name__ == "__main__":
     )
 
     num_steps = config.max_steps // config.n_updates
+    start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
@@ -374,17 +382,34 @@ if __name__ == "__main__":
             config.target_update_freq,
             config.n_updates,
         )
+        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            if not config.disable_wandb:
-                wandb.log(train_metrics, step=i)
+            wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
-            normalized_score = evaluate(policy_fn, env, config.eval_episodes, mean, std)
+            normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
             print(i, normalized_score)
-            eval_metrics = {"normalized_score": normalized_score}
-            if not config.disable_wandb:
-                wandb.log(eval_metrics, step=i)
+            eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
+            wandb.log(eval_metrics, step=i)
+        """
+    end = time.time()
+    policy_fn = partial(
+        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
+    )
+    normalized_score = evaluate(
+        policy_fn,
+        env,
+        num_episodes=config.eval_episodes,
+        obs_mean=obs_mean,
+        obs_std=obs_std,
+    )
+    wandb.log(
+        {
+            f"{config.env_name}/final_normalized_score": normalized_score,
+            f"{config.env_name}/time": end - start,
+        }
+    )

@@ -1,5 +1,6 @@
 # source https://github.com/ikostrikov/implicit_q_learning
 # https://arxiv.org/abs/2110.06169
+import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
@@ -24,6 +25,8 @@ Params = flax.core.FrozenDict[str, Any]
 
 class IQLConfig(BaseModel):
     # GENERAL
+    algo: str = "IQL"
+    project: str = "train-IQL"
     env_name: str = "hopper-medium-expert-v2"
     seed: int = 42
     data_size: int = int(1e6)
@@ -43,7 +46,6 @@ class IQLConfig(BaseModel):
     temperature: float = 3.0  # for Hopper 6.0
     tau: float = 0.005
     discount: float = 0.99
-    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -174,12 +176,14 @@ def get_dataset(
     )
 
     # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
+    # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
-    assert len(dataset.observations) >= config.data_size
-    dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
     return dataset
 
 
@@ -382,8 +386,7 @@ def get_normalization(dataset: Transition) -> float:
 
 
 if __name__ == "__main__":
-    if not config.disable_wandb:
-        wandb.init(config=config, project="iql")
+    wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset: Transition = get_dataset(env, config)
@@ -399,15 +402,16 @@ if __name__ == "__main__":
     )
 
     num_steps = config.max_steps // config.n_updates
+    start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
             dataset, subkey, config.batch_size, config.n_updates
         )
+        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            if not config.disable_wandb:
-                wandb.log(train_metrics, step=i)
+            wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
@@ -417,6 +421,21 @@ if __name__ == "__main__":
                 policy_fn, env, num_episodes=config.eval_episodes
             )
             print(i, normalized_score)
-            eval_metrics = {"normalized_score": normalized_score}
-            if not config.disable_wandb:
-                wandb.log(eval_metrics, step=i)
+            eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
+            wandb.log(eval_metrics, step=i)
+        """
+    end = time.time()
+    policy_fn = partial(
+        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
+    )
+    normalized_score = evaluate(
+        policy_fn,
+        env,
+        num_episodes=config.eval_episodes,
+    )
+    wandb.log(
+        {
+            f"{config.env_name}/final_normalized_score": normalized_score,
+            f"{config.env_name}/time": end - start,
+        }
+    )

@@ -1,3 +1,4 @@
+import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
@@ -21,6 +22,8 @@ Params = flax.core.FrozenDict[str, Any]
 
 class TD3BCConfig(BaseModel):
     # GENERAL
+    algo: str = "TD3-BC"
+    project: str = "train-TD3-BC"
     env_name: str = "hopper-medium-expert-v2"
     seed: int = 42
     data_size: int = int(1e6)
@@ -41,7 +44,6 @@ class TD3BCConfig(BaseModel):
     policy_noise_clip: float = 0.5  # clip policy noise
     tau: float = 0.005  # target network update rate
     discount: float = 0.99  # discount factor
-    disable_wandb: bool = True
 
 
 conf_dict = OmegaConf.from_cli()
@@ -135,14 +137,14 @@ def get_dataset(
         dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
-
+    data_size = min(config.data_size, len(dataset.observations))
     # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
-    assert len(dataset.observations) >= config.data_size
-    dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
 
     # normalize states
     obs_mean = dataset.observations.mean(0)
@@ -361,21 +363,18 @@ def evaluate(
 
 
 if __name__ == "__main__":
+    wandb.init(project=config.project, config=config)
     env = gym.make(config.env_name)
-
     rng = jax.random.PRNGKey(config.seed)
+
     # initialize data and update state
     dataset, obs_mean, obs_std = get_dataset(env, config)
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent = create_trainer(example_batch.observations, example_batch.actions, config)
 
-    wandb.init(project="train-TD3-BC", config=config)
-    epochs = int(
-        config.max_steps // config.n_updates
-    )  # we update multiple times per epoch
-    steps = 0
-    for i in tqdm(range(epochs)):
-        steps += 1
+    num_steps = config.max_steps // config.n_updates
+    start = time.time()
+    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, update_rng = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
             dataset,
@@ -384,10 +383,10 @@ if __name__ == "__main__":
             config.batch_size,
             config.n_updates,
         )  # update parameters
+        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            if not config.disable_wandb:
-                wandb.log(train_metrics, step=i)
+            wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = agent.get_actions
@@ -399,6 +398,21 @@ if __name__ == "__main__":
                 obs_std=obs_std,
             )
             print(i, normalized_score)
-            eval_metrics = {"normalized_score": normalized_score}
-            if not config.disable_wandb:
-                wandb.log(eval_metrics, step=i)
+            eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
+            wandb.log(eval_metrics, step=i)
+        """
+    end = time.time()
+    policy_fn = agent.get_actions
+    normalized_score = evaluate(
+        policy_fn,
+        env,
+        num_episodes=config.eval_episodes,
+        obs_mean=obs_mean,
+        obs_std=obs_std,
+    )
+    wandb.log(
+        {
+            f"{config.env_name}/final_normalized_score": normalized_score,
+            f"{config.env_name}/time": end - start,
+        }
+    )
