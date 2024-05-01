@@ -21,6 +21,7 @@ Params = flax.core.FrozenDict[str, Any]
 
 class TD3BCConfig(BaseModel):
     # GENERAL
+    algo: str = "TD3-BC"
     env_name: str = "hopper-medium-expert-v2"
     seed: int = 42
     data_size: int = int(1e6)
@@ -135,14 +136,14 @@ def get_dataset(
         dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
-
+    data_size = min(config.data_size, len(dataset.observations))
     # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
-    assert len(dataset.observations) >= config.data_size
-    dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_map(lambda x: x[: data_size], dataset)
 
     # normalize states
     obs_mean = dataset.observations.mean(0)
@@ -386,8 +387,7 @@ if __name__ == "__main__":
         )  # update parameters
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
-            if not config.disable_wandb:
-                wandb.log(train_metrics, step=i)
+            wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = agent.get_actions
@@ -399,6 +399,14 @@ if __name__ == "__main__":
                 obs_std=obs_std,
             )
             print(i, normalized_score)
-            eval_metrics = {"normalized_score": normalized_score}
-            if not config.disable_wandb:
-                wandb.log(eval_metrics, step=i)
+            eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
+            wandb.log(eval_metrics, step=i)
+    policy_fn = agent.get_actions
+    normalized_score = evaluate(
+        policy_fn,
+        env,
+        num_episodes=config.eval_episodes,
+        obs_mean=obs_mean,
+        obs_std=obs_std,
+    )
+    wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})

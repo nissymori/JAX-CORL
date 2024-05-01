@@ -281,7 +281,7 @@ class CQLTrainer(NamedTuple):
             q_mse1 = jnp.mean((q1 - target_q) ** 2)
             q_mse2 = jnp.mean((q2 - target_q) ** 2)
 
-            ######### CQL loss #########
+            ########## CQL loss ##########
             # radom actions
             rng, rand_rng, current_rng, next_rng = jax.random.split(rng, 4)
             rand_actions = jax.random.uniform(
