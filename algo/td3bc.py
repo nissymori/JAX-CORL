@@ -17,6 +17,8 @@ from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tqdm import tqdm
 
+Params = flax.core.FrozenDict[str, Any]
+
 
 class TD3BCConfig(BaseModel):
     # GENERAL
@@ -77,7 +79,7 @@ class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, observation, action):
+    def __call__(self, observation: jnp.ndarray, action: jnp.ndarray):
         x = jnp.concatenate([observation, action], axis=-1)
         q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
@@ -90,8 +92,8 @@ class TD3Actor(nn.Module):
     max_action: float = 1.0  # In D4RL, action is scaled to [-1, 1]
 
     @nn.compact
-    def __call__(self, state):
-        action = MLP((*self.hidden_dims, self.action_dim))(state)
+    def __call__(self, observation: jnp.ndarray):
+        action = MLP((*self.hidden_dims, self.action_dim))(observation)
         action = self.max_action * jnp.tanh(
             action
         )  # scale to [-max_action, max_action]
@@ -178,8 +180,10 @@ class TD3BCTrainer(NamedTuple):
     config: flax.core.FrozenDict
     max_action: float = 1.0
 
-    def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
-        def actor_loss_fn(actor_params):
+    def update_actor(
+        agent, batch: Transition, rng: jax.random.PRNGKey
+    ) -> Tuple["TD3BCTrainer", jnp.ndarray]:
+        def actor_loss_fn(actor_params: Params) -> jnp.ndarray:
             predicted_action = agent.actor.apply_fn(actor_params, batch.observations)
             critic_params = jax.lax.stop_gradient(agent.critic.params)
             q_value, _ = agent.critic.apply_fn(
@@ -196,8 +200,10 @@ class TD3BCTrainer(NamedTuple):
         new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
         return agent._replace(actor=new_actor), actor_loss
 
-    def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
-        def critic_loss_fn(critic_params):
+    def update_critic(
+        agent, batch: Transition, rng: jax.random.PRNGKey
+    ) -> Tuple["TD3BCTrainer", jnp.ndarray]:
+        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
             q_pred_1, q_pred_2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -241,7 +247,7 @@ class TD3BCTrainer(NamedTuple):
         policy_freq: int,
         batch_size: int,
         n: int,
-    ):
+    ) -> Tuple["TD3BCTrainer", Dict]:
         for _ in range(n):
             rng, batch_rng = jax.random.split(rng, 2)
             batch_idx = jax.random.randint(
@@ -274,7 +280,9 @@ class TD3BCTrainer(NamedTuple):
         return action
 
 
-def create_trainer(observations, actions, config) -> TD3BCTrainer:
+def create_trainer(
+    observations: jnp.ndarray, actions: jnp.ndarray, config
+) -> TD3BCTrainer:
     rng = jax.random.PRNGKey(config.seed)
     critic_model = DoubleCritic(
         hidden_dims=config.hidden_dims,
@@ -355,7 +363,6 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    # setup environemnt, inthis case, D4RL. Please change to your own environment
     env = gym.make(config.env_name)
 
     rng = jax.random.PRNGKey(config.seed)
@@ -372,14 +379,13 @@ if __name__ == "__main__":
     for _ in tqdm(range(epochs)):
         steps += 1
         rng, update_rng = jax.random.split(rng)
-        # update parameters
         agent, update_info = agent.update_n_times(
             dataset,
             update_rng,
             config.policy_freq,
             config.batch_size,
             config.n_updates,
-        )
+        )  # update parameters
         if _ % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             if not config.disable_wandb:
@@ -388,7 +394,11 @@ if __name__ == "__main__":
         if _ % config.eval_interval == 0:
             policy_fn = agent.get_actions
             normalized_score = evaluate(
-                policy_fn, env, num_episodes=config.eval_episodes, obs_mean=obs_mean, obs_std=obs_std
+                policy_fn,
+                env,
+                num_episodes=config.eval_episodes,
+                obs_mean=obs_mean,
+                obs_std=obs_std,
             )
             print(_, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
