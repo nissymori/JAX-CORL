@@ -87,7 +87,7 @@ class DoubleCritic(nn.Module):  # TODO use MLP class ?
 class TD3Actor(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
     action_dim: int
-    max_action: float
+    max_action: float = 1.0  # In D4RL, action is scaled to [-1, 1]
 
     @nn.compact
     def __call__(self, state):
@@ -175,8 +175,8 @@ class TD3BCTrainer(NamedTuple):
     target_actor: TrainState
     target_critic: TrainState
     update_idx: jnp.int32
-    max_action: float
     config: flax.core.FrozenDict
+    max_action: float = 1.0
 
     def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
         def actor_loss_fn(actor_params):
@@ -218,9 +218,12 @@ class TD3BCTrainer(NamedTuple):
             q_next_1, q_next_2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.next_observations, target_next_action
             )
-            target = batch.rewards[..., None] + agent.config["discount"] * jnp.minimum(
-                q_next_1, q_next_2
-            ) * batch.masks[..., None]
+            target = (
+                batch.rewards[..., None]
+                + agent.config["discount"]
+                * jnp.minimum(q_next_1, q_next_2)
+                * batch.masks[..., None]
+            )
             target = jax.lax.stop_gradient(target)  # stop gradient for target
             value_loss_1 = jnp.square(q_pred_1 - target)
             value_loss_2 = jnp.square(q_pred_2 - target)
@@ -278,29 +281,23 @@ class TD3BCTrainer(NamedTuple):
         return action
 
 
-def create_trainer(
-    observation_dim, action_dim, max_action, config
-) -> TD3BCTrainer:
+def create_trainer(observations, actions, config) -> TD3BCTrainer:
     rng = jax.random.PRNGKey(config.seed)
     critic_model = DoubleCritic(
         hidden_dims=config.hidden_dims,
     )
+    action_dim = actions.shape[-1]
     actor_model = TD3Actor(
         action_dim=action_dim,
-        max_action=max_action,
         hidden_dims=config.hidden_dims,
     )
     rng, critic_rng, actor_rng = jax.random.split(rng, 3)
     # initialize critic and actor parameters
-    critic_params = critic_model.init(
-        critic_rng, jnp.zeros(observation_dim), jnp.zeros(action_dim)
-    )
-    critic_params_target = critic_model.init(
-        critic_rng, jnp.zeros(observation_dim), jnp.zeros(action_dim)
-    )
+    critic_params = critic_model.init(critic_rng, observations, actions)
+    critic_params_target = critic_model.init(critic_rng, observations, actions)
 
-    actor_params = actor_model.init(actor_rng, jnp.zeros(observation_dim))
-    actor_params_target = actor_model.init(actor_rng, jnp.zeros(observation_dim))
+    actor_params = actor_model.init(actor_rng, observations)
+    actor_params_target = actor_model.init(actor_rng, observations)
 
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
@@ -340,7 +337,6 @@ def create_trainer(
         target_actor=target_actor_train_state,
         target_critic=target_critic_train_state,
         update_idx=0,
-        max_action=max_action,
         config=config,
     )
 
@@ -364,18 +360,16 @@ def evaluate(
         episode_returns.append(episode_return)
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
+
 if __name__ == "__main__":
     # setup environemnt, inthis case, D4RL. Please change to your own environment
     env = gym.make(config.env_name)
-    observation_dim = dataset["observations"].shape[-1]
-    action_dim = env.action_space.shape[0]
-    max_action = env.action_space.high
 
     rng = jax.random.PRNGKey(config.seed)
-    rng, model_rng = jax.random.split(rng, 2)
     # initialize data and update state
-    data, obs_mean, obs_std = get_dataset(env, config)
-    agent = create_trainer(observation_dim, action_dim, max_action, config)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
+    example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
+    agent = create_trainer(example_batch.observations, example_batch.actions, config)
 
     wandb.init(project="train-TD3-BC", config=config)
     epochs = int(
@@ -384,10 +378,10 @@ if __name__ == "__main__":
     steps = 0
     for _ in tqdm(range(epochs)):
         steps += 1
-        rng, update_rng = jax.random.split(rng, 2)
+        rng, update_rng = jax.random.split(rng)
         # update parameters
         agent = agent.update_n_times(
-            data,
+            dataset,
             update_rng,
             config.policy_freq,
             config.batch_size,
