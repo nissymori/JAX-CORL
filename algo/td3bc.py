@@ -103,38 +103,52 @@ class Transition(NamedTuple):
     actions: jnp.ndarray
     next_observations: jnp.ndarray
     rewards: jnp.ndarray
-    dones: jnp.ndarray
+    dones_float: jnp.ndarray
+    masks: jnp.ndarray
 
 
 def get_dataset(
-    dataset: dict, rng: jax.random.PRNGKey
-) -> Tuple[Transition, np.ndarray, np.ndarray]:
-    """
-    This part is D4RL specific. Please change to your own dataset.
-    As long as your can convert your dataset in the form of Transition, it should work.
-    """
-    rng, subkey = jax.random.split(rng)
-    data = Transition(
-        observations=jnp.asarray(dataset["observations"]),
-        actions=jnp.asarray(dataset["actions"]),
-        next_observations=jnp.asarray(dataset["next_observations"]),
-        rewards=jnp.asarray(dataset["rewards"]),
-        dones=jnp.asarray(dataset["terminals"]),
+    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
+) -> Transition:
+    dataset = d4rl.qlearning_dataset(env)
+
+    if clip_to_eps:
+        lim = 1 - eps
+        dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
+
+    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
+    same_obs = np.all(
+        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
+        axis=-1,
     )
+    dones_float = 1.0 - same_obs.astype(np.float32)
+    dones_float[-1] = 1
+
+    dataset = Transition(
+        observations=jnp.array(dataset["observations"], dtype=jnp.float32),
+        actions=jnp.array(dataset["actions"], dtype=jnp.float32),
+        rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
+        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
+        dones_float=jnp.array(dones_float, dtype=jnp.float32),
+        next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
+    )
+
     # shuffle data and select the first data_size samples
+    rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
-    perm = jax.random.permutation(rng_permute, len(data.observations))
-    data = jax.tree_map(lambda x: x[perm], data)
-    assert len(data.observations) >= config.data_size
-    data = jax.tree_map(lambda x: x[: config.data_size], data)
-    # normalize observations and next_observations
-    obs_mean = jnp.mean(data.observations, axis=0)
-    obs_std = jnp.std(data.observations, axis=0)
-    data = data._replace(
-        observations=(data.observations - obs_mean) / obs_std,
-        next_observations=(data.next_observations - obs_mean) / obs_std,
+    perm = jax.random.permutation(rng_permute, len(dataset.observations))
+    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    assert len(dataset.observations) >= config.data_size
+    dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
+
+    # normalize states
+    obs_mean = dataset.observations.mean(0)
+    obs_std = dataset.observations.std(0) + 1e-6
+    dataset = dataset._replace(
+        observations=(dataset.observations - obs_mean) / obs_std,
+        next_observations=(dataset.next_observations - obs_mean) / obs_std,
     )
-    return data, obs_mean, obs_std
+    return dataset, obs_mean, obs_std
 
 
 def target_update(
@@ -206,7 +220,7 @@ class TD3BCTrainer(NamedTuple):
             )
             target = batch.rewards[..., None] + agent.config["discount"] * jnp.minimum(
                 q_next_1, q_next_2
-            ) * (1 - batch.dones[..., None])
+            ) * batch.masks[..., None]
             target = jax.lax.stop_gradient(target)  # stop gradient for target
             value_loss_1 = jnp.square(q_pred_1 - target)
             value_loss_2 = jnp.square(q_pred_2 - target)
@@ -353,15 +367,14 @@ def evaluate(
 if __name__ == "__main__":
     # setup environemnt, inthis case, D4RL. Please change to your own environment
     env = gym.make(config.env_name)
-    dataset = d4rl.qlearning_dataset(env)
     observation_dim = dataset["observations"].shape[-1]
     action_dim = env.action_space.shape[0]
     max_action = env.action_space.high
 
     rng = jax.random.PRNGKey(config.seed)
-    rng, data_rng, model_rng = jax.random.split(rng, 3)
+    rng, model_rng = jax.random.split(rng, 2)
     # initialize data and update state
-    data, obs_mean, obs_std = get_dataset(dataset, data_rng)
+    data, obs_mean, obs_std = get_dataset(env, config)
     agent = create_trainer(observation_dim, action_dim, max_action, config)
 
     wandb.init(project="train-TD3-BC", config=config)

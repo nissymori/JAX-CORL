@@ -159,13 +159,13 @@ def get_dataset(
     dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
 
     # normalize states
-    state_mean = dataset.observations.mean(0)
-    state_std = dataset.observations.std(0) + 1e-6
+    obs_mean = dataset.observations.mean(0)
+    obs_std = dataset.observations.std(0) + 1e-6
     dataset = dataset._replace(
-        observations=(dataset.observations - state_mean) / state_std,
-        next_observations=(dataset.next_observations - state_mean) / state_std,
+        observations=(dataset.observations - obs_mean) / obs_std,
+        next_observations=(dataset.next_observations - obs_mean) / obs_std,
     )
-    return dataset, state_mean, state_std
+    return dataset, obs_mean, obs_std
 
 
 def target_update(
