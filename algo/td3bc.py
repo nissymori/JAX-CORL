@@ -19,26 +19,26 @@ from tqdm import tqdm
 
 
 class TD3BCConfig(BaseModel):
-    # general config
+    # GENERAL
     env_name: str = "hopper-medium-expert-v2"
-    max_steps: int = 1000000
-    eval_interval: int = 10000
-    updates_per_epoch: int = 8
-
+    seed: int = 42
+    data_size: int = int(1e6)
     eval_episodes: int = 5
+    log_interval: int = 100000
+    eval_interval: int = 10000
     batch_size: int = 256
-    data_size: int = 1000000
-    seed: int = 0
-    # network config
+    max_steps: int = int(1e6)
+    n_updates: int = 8
+    # NETWORK
     hidden_dims: Sequence[int] = (256, 256)
     critic_lr: float = 1e-3
     actor_lr: float = 1e-3
-    # TD3-BC specific
+    # TD3-BC SPECIFIC
     policy_freq: int = 2  # update actor every policy_freq updates
-    tau: float = 0.005  # target network update rate
     alpha: float = 2.5  # BC loss weight
     policy_noise_std: float = 0.2  # std of policy noise
     policy_noise_clip: float = 0.5  # clip policy noise
+    tau: float = 0.005  # target network update rate
     discount: float = 0.99  # discount factor
 
 
@@ -365,31 +365,33 @@ if __name__ == "__main__":
 
     wandb.init(project="train-TD3-BC", config=config)
     epochs = int(
-        config.max_steps // config.updates_per_epoch
+        config.max_steps // config.n_updates
     )  # we update multiple times per epoch
     steps = 0
     for _ in tqdm(range(epochs)):
         steps += 1
         rng, update_rng = jax.random.split(rng)
         # update parameters
-        agent, _ = agent.update_n_times(
+        agent, update_info = agent.update_n_times(
             dataset,
             update_rng,
             config.policy_freq,
             config.batch_size,
-            config.updates_per_epoch,
+            config.n_updates,
         )
-        if steps % config.eval_interval == 0:
-            eval_dict = {}
+        if i % config.log_interval == 0:
+            train_metrics = {f"training/{k}": v for k, v in update_info.items()}
+            if not config.disable_wandb:
+                wandb.log(train_metrics, step=i)
+
+        if i % config.eval_interval == 0:
+            policy_fn = partial(
+                agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
+            )
             normalized_score = evaluate(
-                agent,
-                env,
-                config.eval_episodes,
-                obs_mean,
-                obs_std,
-            )  # evaluate actor
-            eval_dict[f"normalized_score_{config.env_name}"] = normalized_score
-            eval_dict[f"step"] = steps
-            print(eval_dict)
-            wandb.log(eval_dict)
-    wandb.finish()
+                policy_fn, env, num_episodes=config.eval_episodes
+            )
+            print(i, normalized_score)
+            eval_metrics = {"normalized_score": normalized_score}
+            if not config.disable_wandb:
+                wandb.log(eval_metrics, step=i)

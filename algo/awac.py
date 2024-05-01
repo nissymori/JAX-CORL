@@ -25,23 +25,23 @@ class AWACConfig(BaseModel):
     env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = np.random.choice(1000000)
     data_size: int = int(1e6)
-    eval_episodes: int = 10
+    eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
-    save_interval: int = 25000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
-    # TRAINING
-    actor_lr: float = 3e-4
-    critic_lr: float = 3e-4
+    # NETWORK
     actor_hidden_dims: Tuple[int, int] = (256, 256, 256, 256)
     critic_hidden_dims: Tuple[int, int] = (256, 256)
-    discount: float = 0.99
-    tau: float = 0.005
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    # AWAC SPECIFIC
     beta: float = 1.0
     target_update_freq: int = 1
     exp_adv_max: float = 100.0
+    tau: float = 0.005
+    discount: float = 0.99
     disable_wandb: bool = True
 
 

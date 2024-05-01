@@ -23,24 +23,24 @@ Params = flax.core.FrozenDict[str, Any]
 class IQLConfig(BaseModel):
     # GENERAL
     env_name: str = "hopper-medium-expert-v2"
-    seed: int = np.random.choice(1000000)
+    seed: int = 42
     data_size: int = int(1e6)
-    eval_episodes: int = 10
+    eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
-    save_interval: int = 25000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
     # TRAINING
+    hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
-    hidden_dims: Tuple[int, int] = (256, 256)
-    discount: float = 0.99
+    # IQL SPECIFIC
     expectile: float = 0.7  # for Hopper 0.5
     temperature: float = 3.0  # for Hopper 6.0
     tau: float = 0.005
+    discount: float = 0.99
     disable_wandb: bool = True
 
 
