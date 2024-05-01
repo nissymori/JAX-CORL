@@ -1,21 +1,21 @@
-import time
 from functools import partial
-from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple
+from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
+                    Union)
 
-import d4rl
-import flax
-import flax.linen as nn
-import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
+import flax
+import flax.linen as nn
+from flax.training.train_state import TrainState
 import optax
+import gym
+import d4rl
+
 import tqdm
 import wandb
-from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-from tqdm import tqdm
 
 Params = flax.core.FrozenDict[str, Any]
 
@@ -378,7 +378,7 @@ if __name__ == "__main__":
         config.max_steps // config.n_updates
     )  # we update multiple times per epoch
     steps = 0
-    for _ in tqdm(range(epochs)):
+    for i in tqdm(range(epochs)):
         steps += 1
         rng, update_rng = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
@@ -388,12 +388,12 @@ if __name__ == "__main__":
             config.batch_size,
             config.n_updates,
         )  # update parameters
-        if _ % config.log_interval == 0:
+        if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             if not config.disable_wandb:
                 wandb.log(train_metrics, step=i)
 
-        if _ % config.eval_interval == 0:
+        if i % config.eval_interval == 0:
             policy_fn = agent.get_actions
             normalized_score = evaluate(
                 policy_fn,
@@ -402,7 +402,7 @@ if __name__ == "__main__":
                 obs_mean=obs_mean,
                 obs_std=obs_std,
             )
-            print(_, normalized_score)
+            print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
             if not config.disable_wandb:
                 wandb.log(eval_metrics, step=i)

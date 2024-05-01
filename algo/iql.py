@@ -1,19 +1,22 @@
+# source https://github.com/ikostrikov/implicit_q_learning
+# https://arxiv.org/abs/2110.06169
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
-import d4rl
-import distrax
-import flax
-import flax.linen as nn
-import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
+import flax
+import flax.linen as nn
+from flax.training.train_state import TrainState
 import optax
+import distrax
+import gym
+import d4rl
+
 import tqdm
 import wandb
-from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
