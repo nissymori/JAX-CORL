@@ -1,18 +1,17 @@
 cython==0.29.30
-numpy
 mujoco-py
 IPython
 wandb
 pydantic
 omegaconf
-matplotlib
 git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl
 gym
-flax
+tqdm
 
+numpy
 jax[cuda11_cudnn82]==0.4.8
 jaxlib==0.4.7+cuda11.cudnn82
-
-tensorflow_probability==0.20.0
-#  for compatibility to jax 0.4.8 
+distrax
+flax
+optax
 
