@@ -230,7 +230,7 @@ class IQLTrainer(NamedTuple):
             q1, q2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.observations, batch.actions
             )
-            q = jnp.minimum(q1, q2)
+            q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
             v = agent.value.apply_fn(value_params, batch.observations)
             value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
             return value_loss

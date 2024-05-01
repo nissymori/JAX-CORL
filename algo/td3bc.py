@@ -193,8 +193,8 @@ class TD3BCTrainer(NamedTuple):
             loss_actor = -1.0 * q_value.mean() * loss_lambda + bc_loss
             return loss_actor
 
-        new_actor, _ = update_by_loss_grad(agent.actor, actor_loss_fn)
-        return agent._replace(actor=new_actor)
+        new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
+        return agent._replace(actor=new_actor), actor_loss
 
     def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
         def critic_loss_fn(critic_params):
@@ -230,17 +230,10 @@ class TD3BCTrainer(NamedTuple):
             value_loss = (value_loss_1 + value_loss_2).mean()
             return value_loss
 
-        new_critic, _ = update_by_loss_grad(agent.critic, critic_loss_fn)
-        return agent._replace(critic=new_critic)
+        new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
+        return agent._replace(critic=new_critic), critic_loss
 
-    @partial(
-        jax.jit,
-        static_argnames=(
-            "policy_freq",
-            "batch_size",
-            "n",
-        ),
-    )
+    @partial(jax.jit, static_argnums=(2, 3, 4))
     def update_n_times(
         agent,
         data: Transition,
@@ -256,9 +249,9 @@ class TD3BCTrainer(NamedTuple):
             )
             batch: Transition = jax.tree_map(lambda x: x[batch_idx], data)
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            agent = agent.update_critic(batch, critic_rng)
+            agent, critic_loss = agent.update_critic(batch, critic_rng)
             if _ % policy_freq == 0:
-                agent = agent.update_actor(batch, actor_rng)
+                agent, actor_loss = agent.update_actor(batch, actor_rng)
                 new_target_critic = target_update(
                     agent.critic, agent.target_critic, agent.config["tau"]
                 )
@@ -269,10 +262,10 @@ class TD3BCTrainer(NamedTuple):
                     target_critic=new_target_critic,
                     target_actor=new_target_actor,
                 )
-        return agent._replace(update_idx=agent.update_idx + 1)
+        return agent._replace(update_idx=agent.update_idx + 1), {}
 
     @jax.jit
-    def get_action(
+    def get_actions(
         agent,
         obs: jnp.ndarray,
     ) -> jnp.ndarray:
@@ -354,7 +347,7 @@ def evaluate(
         observation, done = env.reset(), False
         while not done:
             observation = (observation - obs_mean) / obs_std
-            action = agent.get_action(observation)
+            action = agent.get_actions(observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
         episode_returns.append(episode_return)
