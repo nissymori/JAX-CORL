@@ -73,7 +73,7 @@ class MLP(nn.Module):
         return x
 
 
-class DoubleCritic(nn.Module):  # TODO use MLP class ?
+class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
 
     @nn.compact
@@ -84,7 +84,7 @@ class DoubleCritic(nn.Module):  # TODO use MLP class ?
         return q1, q2
 
 
-class TD3Actor(nn.Module):  # TODO use MLP class ?
+class TD3Actor(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
     max_action: float = 1.0  # In D4RL, action is scaled to [-1, 1]
@@ -241,7 +241,7 @@ class TD3BCTrainer(NamedTuple):
         policy_freq: int,
         batch_size: int,
         n: int,
-    ):  # TODO reduce arguments??
+    ):
         for _ in range(n):
             rng, batch_rng = jax.random.split(rng, 2)
             batch_idx = jax.random.randint(

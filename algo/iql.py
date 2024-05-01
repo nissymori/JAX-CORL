@@ -277,7 +277,7 @@ class IQLTrainer(NamedTuple):
             new_target_critic = target_update(
                 agent.critic, agent.target_critic, agent.config["target_update_rate"]
             )
-        return agent._replace(target_critic=new_target_critic), {}  # TODO return losses
+        return agent._replace(target_critic=new_target_critic), {} 
 
     @jax.jit
     def sample_actions(

@@ -75,7 +75,7 @@ class MLP(nn.Module):
         return x
 
 
-class DoubleCritic(nn.Module):  # TODO use MLP class ?
+class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
 
     @nn.compact
@@ -268,7 +268,7 @@ class AWACTrainer(NamedTuple):
                 agent.config["target_update_rate"],
             )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
-        return agent._replace(target_critic=new_target_critic), {}  # TODO return losses
+        return agent._replace(target_critic=new_target_critic), {} 
 
     @jax.jit
     def sample_actions(
