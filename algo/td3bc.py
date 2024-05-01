@@ -23,9 +23,8 @@ class TD3BCConfig(BaseModel):
     env_name: str = "hopper-medium-expert-v2"
     max_steps: int = 1000000
     eval_interval: int = 10000
-    updates_per_epoch: int = (
-        8  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
-    )
+    updates_per_epoch: int = 8
+
     eval_episodes: int = 5
     batch_size: int = 256
     data_size: int = 1000000
@@ -373,7 +372,7 @@ if __name__ == "__main__":
         steps += 1
         rng, update_rng = jax.random.split(rng)
         # update parameters
-        agent = agent.update_n_times(
+        agent, _ = agent.update_n_times(
             dataset,
             update_rng,
             config.policy_freq,
