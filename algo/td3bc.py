@@ -377,7 +377,7 @@ if __name__ == "__main__":
     )  # we update multiple times per epoch
     steps = 0
     start = time.time()
-    for i in tqdm(range(epochs)):
+    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         steps += 1
         rng, update_rng = jax.random.split(rng)
         agent, update_info = agent.update_n_times(

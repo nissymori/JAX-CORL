@@ -424,10 +424,10 @@ if __name__ == "__main__":
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
         """
+    end = time.time()
     policy_fn = partial(
         agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
     )
-    policy_fn = agent.get_actions
     normalized_score = evaluate(
         policy_fn,
         env,
