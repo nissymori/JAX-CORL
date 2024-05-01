@@ -265,8 +265,9 @@ class TD3BCTrainer(NamedTuple):
 
 
 def create_trainer(
-    observation_dim, action_dim, max_action, rng, config
+    observation_dim, action_dim, max_action, config
 ) -> TD3BCTrainer:
+    rng = jax.random.PRNGKey(config.seed)
     critic_model = DoubleCritic(
         hidden_dims=config.hidden_dims,
     )
@@ -361,7 +362,7 @@ if __name__ == "__main__":
     rng, data_rng, model_rng = jax.random.split(rng, 3)
     # initialize data and update state
     data, obs_mean, obs_std = get_dataset(dataset, data_rng)
-    agent = create_trainer(observation_dim, action_dim, max_action, model_rng, config)
+    agent = create_trainer(observation_dim, action_dim, max_action, config)
 
     wandb.init(project="train-TD3-BC", config=config)
     epochs = int(
