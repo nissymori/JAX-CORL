@@ -363,19 +363,16 @@ def evaluate(
 
 
 if __name__ == "__main__":
+    wandb.init(project=config.project, config=config)
     env = gym.make(config.env_name)
-
     rng = jax.random.PRNGKey(config.seed)
+
     # initialize data and update state
     dataset, obs_mean, obs_std = get_dataset(env, config)
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent = create_trainer(example_batch.observations, example_batch.actions, config)
 
-    wandb.init(project=config.project, config=config)
-    epochs = int(
-        config.max_steps // config.n_updates
-    )  # we update multiple times per epoch
-    steps = 0
+    num_steps = config.max_steps // config.n_updates
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         steps += 1
