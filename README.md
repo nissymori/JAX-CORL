@@ -33,9 +33,9 @@ Normalized Score
 - [CORL](https://github.com/tinkoff-ai/CORL): Comprehensive single-file implementations of offline RL algorithms in pytorch.
 
 **Implementations of offline RL algorithms in JAX**
-- jaxrl
-- JaxCQL
-- sac-n-jax
-- dt-jax
-- td3-bc-jax
+- [jaxrl](https://github.com/ikostrikov/jaxrl): Includes implementatin of AWAC.
+- [JaxCQL](https://github.com/young-geng/JaxCQL): Clean implementation of CQL
+- [implicit_q_learning](https://github.com/ikostrikov/implicit_q_learning): Official implementation of IQL in jax
+- [decision-transformer-jax](https://github.com/yun-kwak/decision-transformer-jax): Jax implementation of [Decision Transformer](https://arxiv.org/abs/2106.01345)
+- [td3-bc-jax](https://github.com/ethanluoyc/td3_bc_jax): Direct port of [original implementation](https://github.com/sfujim/TD3_BC) in jax with Haiku
 
