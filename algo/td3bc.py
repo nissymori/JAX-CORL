@@ -1,3 +1,4 @@
+import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
@@ -22,6 +23,7 @@ Params = flax.core.FrozenDict[str, Any]
 class TD3BCConfig(BaseModel):
     # GENERAL
     algo: str = "TD3-BC"
+    project: str = "train-TD3-BC"
     env_name: str = "hopper-medium-expert-v2"
     seed: int = 42
     data_size: int = int(1e6)
@@ -369,11 +371,12 @@ if __name__ == "__main__":
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent = create_trainer(example_batch.observations, example_batch.actions, config)
 
-    wandb.init(project="train-TD3-BC", config=config)
+    wandb.init(project=config.project, config=config)
     epochs = int(
         config.max_steps // config.n_updates
     )  # we update multiple times per epoch
     steps = 0
+    start = time.time()
     for i in tqdm(range(epochs)):
         steps += 1
         rng, update_rng = jax.random.split(rng)
@@ -384,6 +387,7 @@ if __name__ == "__main__":
             config.batch_size,
             config.n_updates,
         )  # update parameters
+        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
@@ -400,6 +404,8 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
+        """
+    end = time.time()
     policy_fn = agent.get_actions
     normalized_score = evaluate(
         policy_fn,
@@ -408,4 +414,9 @@ if __name__ == "__main__":
         obs_mean=obs_mean,
         obs_std=obs_std,
     )
-    wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
+    wandb.log(
+        {
+            f"{config.env_name}/final_normalized_score": normalized_score,
+            f"{config.env_name}/time": end - start,
+        }
+    )
