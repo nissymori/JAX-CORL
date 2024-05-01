@@ -18,7 +18,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 
 # Reports with D4RL mujoco
 
-Here, we used D4RL mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
+Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
 We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |env|AWAC|IQL|TD3+BC|
 |---|---|---|---|
