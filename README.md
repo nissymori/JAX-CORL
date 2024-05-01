@@ -47,7 +47,7 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
   title={JAX-CORL: Clean Sigle-file Implementations of Offline RL Algorithms in JAX},
   author={Soichiro Nishimori},
   year={2024},
-  url={https://github.com/young-geng/JaxCQL}
+  url={https://github.com/nissymori/JAX-CORL/tree/main}
 }
 ```
 
