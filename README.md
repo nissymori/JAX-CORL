@@ -5,7 +5,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 💠 Focus on **a few important algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms)
 
 # Algorithms
-I would like to thank Johanness for his TD3-BC code base and helpful advices.
+I would like to thank [Johanness](https://github.com/johannesack) for his TD3-BC code base and helpful advices.
 |Algorithm|implementation|training time|
 |---|---|---|
 |[AWAC](https://arxiv.org/abs/2006.09359)| [algo/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/awac.py) ||
