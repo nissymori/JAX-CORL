@@ -1,3 +1,5 @@
+# source https://github.com/ikostrikov/implicit_q_learning
+# https://arxiv.org/abs/2110.06169
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)

@@ -1,6 +1,6 @@
-import time
 from functools import partial
-from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple
+from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
+                    Union)
 
 import d4rl
 import flax
@@ -15,7 +15,6 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-from tqdm import tqdm
 
 Params = flax.core.FrozenDict[str, Any]
 
@@ -250,7 +249,7 @@ class TD3BCTrainer(NamedTuple):
         batch_size: int,
         n: int,
     ) -> Tuple["TD3BCTrainer", Dict]:
-        for _ in range(n):
+        for _ in range(n):  # we can jit for roop for static unroll
             rng, batch_rng = jax.random.split(rng, 2)
             batch_idx = jax.random.randint(
                 batch_rng, (batch_size,), 0, len(data.observations)
@@ -295,31 +294,28 @@ def create_trainer(
         hidden_dims=config.hidden_dims,
     )
     rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-    # initialize critic and actor parameters
-    critic_params = critic_model.init(critic_rng, observations, actions)
-    critic_params_target = critic_model.init(critic_rng, observations, actions)
 
-    actor_params = actor_model.init(actor_rng, observations)
-    actor_params_target = actor_model.init(actor_rng, observations)
-
+    # initialize critic
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_params,
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
     target_critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_params_target,
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
+
+    # initialize actor
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
-        params=actor_params,
+        params=actor_model.init(actor_rng, observations),
         tx=optax.adam(config.actor_lr),
     )
     target_actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
-        params=actor_params_target,
+        params=actor_model.init(actor_rng, observations),
         tx=optax.adam(config.actor_lr),
     )
 
@@ -378,7 +374,7 @@ if __name__ == "__main__":
         config.max_steps // config.n_updates
     )  # we update multiple times per epoch
     steps = 0
-    for _ in tqdm(range(epochs)):
+    for i in tqdm(range(epochs)):
         steps += 1
         rng, update_rng = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
@@ -388,12 +384,12 @@ if __name__ == "__main__":
             config.batch_size,
             config.n_updates,
         )  # update parameters
-        if _ % config.log_interval == 0:
+        if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             if not config.disable_wandb:
                 wandb.log(train_metrics, step=i)
 
-        if _ % config.eval_interval == 0:
+        if i % config.eval_interval == 0:
             policy_fn = agent.get_actions
             normalized_score = evaluate(
                 policy_fn,
@@ -402,7 +398,7 @@ if __name__ == "__main__":
                 obs_mean=obs_mean,
                 obs_std=obs_std,
             )
-            print(_, normalized_score)
+            print(i, normalized_score)
             eval_metrics = {"normalized_score": normalized_score}
             if not config.disable_wandb:
                 wandb.log(eval_metrics, step=i)
