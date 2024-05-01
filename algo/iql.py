@@ -181,7 +181,7 @@ def get_dataset(
     return dataset
 
 
-def expectile_loss(diff, expectile=0.8):
+def expectile_loss(diff, expectile=0.8) -> jnp.ndarray:
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
@@ -213,7 +213,7 @@ class IQLTrainer(NamedTuple):
     config: flax.core.FrozenDict
 
     def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def critic_loss_fn(critic_params):
+        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
             q1, q2 = agent.critic.apply_fn(
@@ -226,7 +226,7 @@ class IQLTrainer(NamedTuple):
         return agent._replace(critic=new_critic), critic_loss
 
     def update_value(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def value_loss_fn(value_params):
+        def value_loss_fn(value_params: Params) -> jnp.ndarray:
             q1, q2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.observations, batch.actions
             )
@@ -239,7 +239,7 @@ class IQLTrainer(NamedTuple):
         return agent._replace(value=new_value), value_loss
 
     def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def actor_loss_fn(actor_params):
+        def actor_loss_fn(actor_params: Params) -> jnp.ndarray:
             v = agent.value.apply_fn(agent.value.params, batch.observations)
             q1, q2 = agent.critic.apply_fn(
                 agent.critic.params, batch.observations, batch.actions
@@ -263,7 +263,7 @@ class IQLTrainer(NamedTuple):
         rng: jax.random.PRNGKey,
         batch_size: int,
         n_updates: int,
-    ):
+    ) -> Tuple["IQLTrainer", Dict]:
         for _ in range(n_updates):
             rng, subkey = jax.random.split(rng)
             batch_indices = jax.random.randint(
@@ -277,13 +277,12 @@ class IQLTrainer(NamedTuple):
             new_target_critic = target_update(
                 agent.critic, agent.target_critic, agent.config["target_update_rate"]
             )
-        return agent._replace(target_critic=new_target_critic), {} 
+        return agent._replace(target_critic=new_target_critic), {}
 
     @jax.jit
     def sample_actions(
         agent,
         observations: np.ndarray,
-        *,
         seed: jax.random.PRNGKey,
         temperature: float = 1.0,
     ) -> jnp.ndarray:
@@ -300,7 +299,7 @@ def create_trainer(
     config: IQLConfig,
 ) -> IQLTrainer:
     rng = jax.random.PRNGKey(config.seed)
-    rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
+    rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
     actor_model = GaussianPolicy(
@@ -313,26 +312,26 @@ def create_trainer(
 
     actor = TrainState.create(
         apply_fn=actor_model.apply,
-        params=actor_model.init(actor_key, observations),
+        params=actor_model.init(actor_rng, observations),
         tx=actor_tx,
     )
     # initialize critic
     critic_model = ensemblize(Critic, num_qs=2)(config.hidden_dims)
     critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_model.init(critic_key, observations, actions),
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_model.init(critic_key, observations, actions),
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # initialize value
     value_model = ValueCritic(config.hidden_dims)
     value = TrainState.create(
         apply_fn=value_model.apply,
-        params=value_model.init(value_key, observations),
+        params=value_model.init(value_rng, observations),
         tx=optax.adam(learning_rate=config.value_lr),
     )
     # create immutable config for IQL.
@@ -367,7 +366,7 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
-def get_normalization(dataset: Transition):
+def get_normalization(dataset: Transition) -> float:
     # into numpy.ndarray
     dataset = jax.tree_map(lambda x: np.array(x), dataset)
     returns = []

@@ -79,7 +79,9 @@ class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, observation, action):
+    def __call__(
+        self, observation: jnp.ndarray, action: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         x = jnp.concatenate([observation, action], axis=-1)
         q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
@@ -193,8 +195,10 @@ class AWACTrainer(NamedTuple):
     actor: TrainState
     config: flax.core.FrozenDict
 
-    def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
-        def get_actor_loss(actor_params):
+    def update_actor(
+        agent, batch: Transition, rng: jax.random.PRNGKey
+    ) -> Tuple["AWACTrainer", jnp.ndarray]:
+        def get_actor_loss(actor_params: Params) -> jnp.ndarray:
             dist = agent.actor.apply_fn(actor_params, batch.observations)
             pi_actions = dist.sample(seed=rng)
             q_1, q_2 = agent.critic.apply_fn(
@@ -221,18 +225,17 @@ class AWACTrainer(NamedTuple):
         new_actor, actor_loss = update_by_loss_grad(agent.actor, get_actor_loss)
         return agent._replace(actor=new_actor), actor_loss
 
-    def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
-        def get_critic_loss(critic_params):
+    def update_critic(
+        agent, batch: Transition, rng: jax.random.PRNGKey
+    ) -> Tuple["AWACTrainer", jnp.ndarray]:
+        def get_critic_loss(critic_params: Params) -> jnp.ndarray:
             dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
             next_actions = dist.sample(seed=rng)
             n_q_1, n_q_2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.next_observations, next_actions
             )
             next_q = jnp.minimum(n_q_1, n_q_2)
-            q_target = (
-                batch.rewards
-                + agent.config["discount"] * (1.0 - batch.dones_float) * next_q
-            )
+            q_target = batch.rewards + agent.config["discount"] * batch.masks * next_q
             q_target = jax.lax.stop_gradient(q_target)
 
             q_1, q_2 = agent.critic.apply_fn(
@@ -253,7 +256,7 @@ class AWACTrainer(NamedTuple):
         batch_size: int,
         target_update_freq: int,
         n_updates: int,
-    ):
+    ) -> Tuple["AWACTrainer", Dict]:
         for _ in range(n_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             batch_indices = jax.random.randint(
@@ -268,13 +271,12 @@ class AWACTrainer(NamedTuple):
                 agent.config["target_update_rate"],
             )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
-        return agent._replace(target_critic=new_target_critic), {} 
+        return agent._replace(target_critic=new_target_critic), {}
 
     @jax.jit
     def sample_actions(
         agent,
         observations: np.ndarray,
-        *,
         seed: jax.random.PRNGKey,
         temperature: float = 1.0,
     ) -> jnp.ndarray:
@@ -289,7 +291,7 @@ def create_trainer(
     observations: jnp.ndarray, actions: jnp.ndarray, config: AWACConfig
 ) -> AWACTrainer:
     rng = jax.random.PRNGKey(config.seed)
-    rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
+    rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
     actor_model = GaussianPolicy(
@@ -297,7 +299,7 @@ def create_trainer(
         action_dim=action_dim,
     )
 
-    actor_params = actor_model.init(actor_key, observations)
+    actor_params = actor_model.init(actor_rng, observations)
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_params,
@@ -307,12 +309,12 @@ def create_trainer(
     critic_model = DoubleCritic(config.critic_hidden_dims)
     critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_model.init(critic_key, observations, actions),
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_model.init(critic_key, observations, actions),
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # create immutable config for AWAC.
@@ -334,7 +336,7 @@ def create_trainer(
 
 
 def evaluate(
-    policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float
+    policy_fn: Callable, env: gym.Env, num_episodes: int, mean: float, std: float
 ) -> float:
     episode_returns = []
     for _ in range(num_episodes):
