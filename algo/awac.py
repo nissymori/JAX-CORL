@@ -1,4 +1,4 @@
-# https://github.com/ikostrikov/jaxrl
+# source https://github.com/ikostrikov/jaxrl
 # https://arxiv.org/abs/2006.09359
 import time
 from functools import partial
