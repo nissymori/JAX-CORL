@@ -26,7 +26,7 @@ class TD3BCConfig(BaseModel):
     updates_per_epoch: int = (
         8  # how many updates per epoch. it is equivalent to how frequent we evaluate the policy
     )
-    num_test_rollouts: int = 5
+    eval_episodes: int = 5
     batch_size: int = 256
     data_size: int = 1000000
     seed: int = 0
@@ -40,7 +40,7 @@ class TD3BCConfig(BaseModel):
     alpha: float = 2.5  # BC loss weight
     policy_noise_std: float = 0.2  # std of policy noise
     policy_noise_clip: float = 0.5  # clip policy noise
-    gamma: float = 0.99  # discount factor
+    discount: float = 0.99  # discount factor
 
 
 conf_dict = OmegaConf.from_cli()
@@ -77,10 +77,10 @@ class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, state, action):
-        sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+    def __call__(self, observation, action):
+        x = jnp.concatenate([observation, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         return q1, q2
 
 
@@ -99,9 +99,9 @@ class TD3Actor(nn.Module):  # TODO use MLP class ?
 
 
 class Transition(NamedTuple):
-    states: jnp.ndarray
+    observations: jnp.ndarray
     actions: jnp.ndarray
-    next_states: jnp.ndarray
+    next_observations: jnp.ndarray
     rewards: jnp.ndarray
     dones: jnp.ndarray
 
@@ -115,24 +115,24 @@ def get_dataset(
     """
     rng, subkey = jax.random.split(rng)
     data = Transition(
-        states=jnp.asarray(dataset["observations"]),
+        observations=jnp.asarray(dataset["observations"]),
         actions=jnp.asarray(dataset["actions"]),
-        next_states=jnp.asarray(dataset["next_observations"]),
+        next_observations=jnp.asarray(dataset["next_observations"]),
         rewards=jnp.asarray(dataset["rewards"]),
         dones=jnp.asarray(dataset["terminals"]),
     )
     # shuffle data and select the first data_size samples
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
-    perm = jax.random.permutation(rng_permute, len(data.states))
+    perm = jax.random.permutation(rng_permute, len(data.observations))
     data = jax.tree_map(lambda x: x[perm], data)
-    assert len(data.states) >= config.data_size
+    assert len(data.observations) >= config.data_size
     data = jax.tree_map(lambda x: x[: config.data_size], data)
-    # normalize states and next_states
-    obs_mean = jnp.mean(data.states, axis=0)
-    obs_std = jnp.std(data.states, axis=0)
+    # normalize observations and next_observations
+    obs_mean = jnp.mean(data.observations, axis=0)
+    obs_std = jnp.std(data.observations, axis=0)
     data = data._replace(
-        states=(data.states - obs_mean) / obs_std,
-        next_states=(data.next_states - obs_mean) / obs_std,
+        observations=(data.observations - obs_mean) / obs_std,
+        next_observations=(data.next_observations - obs_mean) / obs_std,
     )
     return data, obs_mean, obs_std
 
@@ -166,10 +166,10 @@ class TD3BCTrainer(NamedTuple):
 
     def update_actor(agent, batch: Transition, rng: jax.random.PRNGKey):
         def actor_loss_fn(actor_params):
-            predicted_action = agent.actor.apply_fn(actor_params, batch.states)
+            predicted_action = agent.actor.apply_fn(actor_params, batch.observations)
             critic_params = jax.lax.stop_gradient(agent.critic.params)
             q_value, _ = agent.critic.apply_fn(
-                critic_params, batch.states, predicted_action
+                critic_params, batch.observations, predicted_action
             )
 
             mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
@@ -185,10 +185,10 @@ class TD3BCTrainer(NamedTuple):
     def update_critic(agent, batch: Transition, rng: jax.random.PRNGKey):
         def critic_loss_fn(critic_params):
             q_pred_1, q_pred_2 = agent.critic.apply_fn(
-                critic_params, batch.states, batch.actions
+                critic_params, batch.observations, batch.actions
             )
             target_next_action = agent.target_actor.apply_fn(
-                agent.target_actor.params, batch.next_states
+                agent.target_actor.params, batch.next_observations
             )
             policy_noise = (
                 agent.config["policy_noise_std"]
@@ -202,12 +202,12 @@ class TD3BCTrainer(NamedTuple):
                 -agent.max_action, agent.max_action
             )
             q_next_1, q_next_2 = agent.target_critic.apply_fn(
-                agent.target_critic.params, batch.next_states, target_next_action
+                agent.target_critic.params, batch.next_observations, target_next_action
             )
-            target = batch.rewards[..., None] + agent.config["gamma"] * jnp.minimum(
+            target = batch.rewards[..., None] + agent.config["discount"] * jnp.minimum(
                 q_next_1, q_next_2
             ) * (1 - batch.dones[..., None])
-            target = jax.lax.stop_gradient(target)
+            target = jax.lax.stop_gradient(target)  # stop gradient for target
             value_loss_1 = jnp.square(q_pred_1 - target)
             value_loss_2 = jnp.square(q_pred_2 - target)
             value_loss = (value_loss_1 + value_loss_2).mean()
@@ -235,7 +235,7 @@ class TD3BCTrainer(NamedTuple):
         for _ in range(n):
             rng, batch_rng = jax.random.split(rng, 2)
             batch_idx = jax.random.randint(
-                batch_rng, (batch_size,), 0, len(data.states)
+                batch_rng, (batch_size,), 0, len(data.observations)
             )
             batch: Transition = jax.tree_map(lambda x: x[batch_idx], data)
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
@@ -258,11 +258,9 @@ class TD3BCTrainer(NamedTuple):
     def get_action(
         agent,
         obs: jnp.ndarray,
-        low: float,
-        high: float,
     ) -> jnp.ndarray:
         action = agent.actor.apply_fn(agent.actor.params, obs)
-        action = action.clip(low, high)
+        action = action.clip(-1.0, 1.0)
         return action
 
 
@@ -315,7 +313,7 @@ def create_trainer(
             alpha=config.alpha,
             policy_noise_std=config.policy_noise_std,
             policy_noise_clip=config.policy_noise_clip,
-            gamma=config.gamma,
+            discount=config.discount,
             tau=config.tau,
             batch_size=config.batch_size,
             policy_freq=config.policy_freq,
@@ -333,32 +331,23 @@ def create_trainer(
 
 
 def evaluate(
-    subkey: jax.random.PRNGKey,
     agent: TD3BCTrainer,
     env: gym.Env,
+    num_episodes: int,
     obs_mean,
     obs_std,
 ) -> float:  # D4RL specific
-    episode_rews = []
-    for _ in range(config.num_test_rollouts):
-        obs = env.reset()
-        done = False
-        episode_rew = 0.0
+    episode_returns = []
+    for _ in range(num_episodes):
+        episode_return = 0
+        observation, done = env.reset(), False
         while not done:
-            obs = jnp.array((obs - obs_mean) / obs_std)
-            action = agent.get_action(
-                obs=obs,
-                low=env.action_space.low,
-                high=env.action_space.high,
-            )
-            action = action.reshape(-1)
-            obs, rew, done, info = env.step(action)
-            episode_rew += rew
-        episode_rews.append(episode_rew)
-    return (
-        env.get_normalized_score(np.mean(episode_rews)) * 100
-    )  # average normalized score
-
+            observation = (observation - obs_mean) / obs_std
+            action = agent.get_action(observation)
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
+        episode_returns.append(episode_return)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 if __name__ == "__main__":
     # setup environemnt, inthis case, D4RL. Please change to your own environment
@@ -381,7 +370,7 @@ if __name__ == "__main__":
     steps = 0
     for _ in tqdm(range(epochs)):
         steps += 1
-        rng, update_rng, eval_rng = jax.random.split(rng, 3)
+        rng, update_rng = jax.random.split(rng, 2)
         # update parameters
         agent = agent.update_n_times(
             data,
@@ -393,9 +382,9 @@ if __name__ == "__main__":
         if steps % config.eval_interval == 0:
             eval_dict = {}
             normalized_score = evaluate(
-                eval_rng,
                 agent,
                 env,
+                config.eval_episodes,
                 obs_mean,
                 obs_std,
             )  # evaluate actor

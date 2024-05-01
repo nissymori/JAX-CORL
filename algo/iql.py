@@ -298,7 +298,6 @@ def create_trainer(
     observations: jnp.ndarray,
     actions: jnp.ndarray,
     config: IQLConfig,
-    opt_decay_schedule: str = "cosine",
 ) -> IQLTrainer:
     rng = jax.random.PRNGKey(config.seed)
     rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
@@ -309,18 +308,13 @@ def create_trainer(
         action_dim=action_dim,
         log_std_min=-5.0,
     )
+    schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
+    actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
 
-    if opt_decay_schedule == "cosine":
-        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
-        actor_tx = optax.chain(
-            optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn)
-        )
-    else:
-        actor_tx = optax.adam(learning_rate=config.actor_lr)
-
-    actor_params = actor_model.init(actor_key, observations)
     actor = TrainState.create(
-        apply_fn=actor_model.apply, params=actor_params, tx=actor_tx
+        apply_fn=actor_model.apply,
+        params=actor_model.init(actor_key, observations),
+        tx=actor_tx,
     )
     # initialize critic
     critic_model = ensemblize(Critic, num_qs=2)(config.hidden_dims)
@@ -336,10 +330,9 @@ def create_trainer(
     )
     # initialize value
     value_model = ValueCritic(config.hidden_dims)
-    value_params = value_model.init(value_key, observations)
     value = TrainState.create(
         apply_fn=value_model.apply,
-        params=value_params,
+        params=value_model.init(value_key, observations),
         tx=optax.adam(learning_rate=config.value_lr),
     )
     # create immutable config for IQL.
@@ -368,8 +361,8 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
         observation, done = env.reset(), False
         while not done:
             action = policy_fn(observation)
-            observation, rew, done, info = env.step(action)
-            episode_return += rew
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
         episode_returns.append(episode_return)
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 

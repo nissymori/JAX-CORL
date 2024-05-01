@@ -79,11 +79,12 @@ class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, state, action):
-        sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+    def __call__(self, observation, action):
+        x = jnp.concatenate([observation, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         return q1, q2
+
 
 class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
@@ -332,7 +333,9 @@ def create_trainer(
     )
 
 
-def evaluate(policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float) -> float:
+def evaluate(
+    policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float
+) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
@@ -340,8 +343,8 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float
         while not done:
             observation = (observation - mean) / std
             action = policy_fn(observation)
-            observation, rew, done, info = env.step(action)
-            episode_return += rew
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
         episode_returns.append(episode_return)
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
