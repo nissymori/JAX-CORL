@@ -19,14 +19,14 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 # Report
 
 Normalized Score
-|env|AWAC|CQL|IQL|TD3+BC|
-|---|---|---|---|---|
-|halfcheetah-medium-expert-v2|   |   |   |   |
-|halfcheetah-medium-v2|   |   |   |   |
-|hopper-medium-expert-v2|   |   |   |   |
-|hopper-medium-v2|   |   |   |   |
-|walker2d-medium-expert-v2|   |   |   |   |
-|walker2d-medium-v2|   |   |   |   |
+|env|AWAC|IQL|TD3+BC|
+|---|---|---|---|
+|halfcheetah-medium-expert-v2|   |   |   |   
+|halfcheetah-medium-v2|   |   |   |   
+|hopper-medium-expert-v2|   |   |   |   
+|hopper-medium-v2|   |   |   |   
+|walker2d-medium-expert-v2|   |   |   |   
+|walker2d-medium-v2|   |   |   |   
 
 # See also
 General offline algo repo
