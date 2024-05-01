@@ -29,9 +29,9 @@ Normalized Score
 |walker2d-medium-v2|   |   |   |   
 
 # See also
-General offline algo repo
-- CORL
-Offline rl algo in jax
+**General offline algo repo**
+- [CORL](https://github.com/tinkoff-ai/CORL): Comprehensive single-file implementations of offline RL algorithms in pytorch.
+**Implementations of offline RL algorithms in JAX**
 - jaxrl
 - JaxCQL
 - sac-n-jax
