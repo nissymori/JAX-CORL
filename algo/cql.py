@@ -26,7 +26,7 @@ class CQLConfig(BaseModel):
     eval_interval: int = 10000
     updates_per_epoch: int = 4  # how many updates per epoch.
 
-    num_test_rollouts: int = 5
+    eval_episodes: int = 5
     batch_size: int = 256
     data_size: int = 1000000
     seed: int = 0
@@ -84,10 +84,10 @@ class DoubleCritic(nn.Module):  # TODO use MLP class ?
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, state, action):
-        sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+    def __call__(self, observation, action):
+        x = jnp.concatenate([observation, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         return q1, q2
 
 
@@ -517,7 +517,7 @@ def evaluate(
     obs_std,
 ) -> float:  # D4RL specific
     episode_rews = []
-    for _ in range(config.num_test_rollouts):
+    for _ in range(config.eval_episodes):
         obs = env.reset()
         done = False
         episode_rew = 0.0

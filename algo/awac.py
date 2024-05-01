@@ -25,23 +25,23 @@ class AWACConfig(BaseModel):
     env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = np.random.choice(1000000)
     data_size: int = int(1e6)
-    eval_episodes: int = 10
+    eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
-    save_interval: int = 25000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
-    # TRAINING
-    actor_lr: float = 3e-4
-    critic_lr: float = 3e-4
+    # NETWORK
     actor_hidden_dims: Tuple[int, int] = (256, 256, 256, 256)
     critic_hidden_dims: Tuple[int, int] = (256, 256)
-    discount: float = 0.99
-    tau: float = 0.005
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    # AWAC SPECIFIC
     beta: float = 1.0
     target_update_freq: int = 1
     exp_adv_max: float = 100.0
+    tau: float = 0.005
+    discount: float = 0.99
     disable_wandb: bool = True
 
 
@@ -75,15 +75,16 @@ class MLP(nn.Module):
         return x
 
 
-class DoubleCritic(nn.Module):  # TODO use MLP class ?
+class DoubleCritic(nn.Module):
     hidden_dims: Sequence[int]
 
     @nn.compact
-    def __call__(self, state, action):
-        sa = jnp.concatenate([state, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(sa)
+    def __call__(self, observation, action):
+        x = jnp.concatenate([observation, action], axis=-1)
+        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
+        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
         return q1, q2
+
 
 class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
@@ -158,13 +159,13 @@ def get_dataset(
     dataset = jax.tree_map(lambda x: x[: config.data_size], dataset)
 
     # normalize states
-    state_mean = dataset.observations.mean(0)
-    state_std = dataset.observations.std(0) + 1e-6
+    obs_mean = dataset.observations.mean(0)
+    obs_std = dataset.observations.std(0) + 1e-6
     dataset = dataset._replace(
-        observations=(dataset.observations - state_mean) / state_std,
-        next_observations=(dataset.next_observations - state_mean) / state_std,
+        observations=(dataset.observations - obs_mean) / obs_std,
+        next_observations=(dataset.next_observations - obs_mean) / obs_std,
     )
-    return dataset, state_mean, state_std
+    return dataset, obs_mean, obs_std
 
 
 def target_update(
@@ -267,7 +268,7 @@ class AWACTrainer(NamedTuple):
                 agent.config["target_update_rate"],
             )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
-        return agent._replace(target_critic=new_target_critic), {}  # TODO return losses
+        return agent._replace(target_critic=new_target_critic), {} 
 
     @jax.jit
     def sample_actions(
@@ -332,7 +333,9 @@ def create_trainer(
     )
 
 
-def evaluate(policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float) -> float:
+def evaluate(
+    policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float
+) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
@@ -340,8 +343,8 @@ def evaluate(policy_fn, env: gym.Env, num_episodes: int, mean: float, std: float
         while not done:
             observation = (observation - mean) / std
             action = policy_fn(observation)
-            observation, rew, done, info = env.step(action)
-            episode_return += rew
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
         episode_returns.append(episode_return)
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
