@@ -250,7 +250,7 @@ class TD3BCTrainer(NamedTuple):
         batch_size: int,
         n: int,
     ) -> Tuple["TD3BCTrainer", Dict]:
-        for _ in range(n):
+        for _ in range(n):  # we can jit for roop for static unroll
             rng, batch_rng = jax.random.split(rng, 2)
             batch_idx = jax.random.randint(
                 batch_rng, (batch_size,), 0, len(data.observations)
@@ -295,31 +295,26 @@ def create_trainer(
         hidden_dims=config.hidden_dims,
     )
     rng, critic_rng, actor_rng = jax.random.split(rng, 3)
+    
     # initialize critic and actor parameters
-    critic_params = critic_model.init(critic_rng, observations, actions)
-    critic_params_target = critic_model.init(critic_rng, observations, actions)
-
-    actor_params = actor_model.init(actor_rng, observations)
-    actor_params_target = actor_model.init(actor_rng, observations)
-
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_params,
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
     target_critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_params_target,
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
-        params=actor_params,
+        params=actor_model.init(actor_rng, observations),
         tx=optax.adam(config.actor_lr),
     )
     target_actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
-        params=actor_params_target,
+        params=actor_model.init(actor_rng, observations),
         tx=optax.adam(config.actor_lr),
     )
 

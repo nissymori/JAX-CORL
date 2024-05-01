@@ -302,10 +302,9 @@ def create_trainer(
         action_dim=action_dim,
     )
 
-    actor_params = actor_model.init(actor_rng, observations)
     actor = TrainState.create(
         apply_fn=actor_model.apply,
-        params=actor_params,
+        params=actor_model.init(actor_rng, observations),
         tx=optax.adam(learning_rate=config.actor_lr),
     )
     # initialize critic
@@ -320,7 +319,7 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-    # create immutable config for AWAC.
+
     config = flax.core.FrozenDict(
         dict(
             discount=config.discount,
