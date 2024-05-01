@@ -289,7 +289,7 @@ def create_trainer(
     observations: jnp.ndarray, actions: jnp.ndarray, config: AWACConfig
 ) -> AWACTrainer:
     rng = jax.random.PRNGKey(config.seed)
-    rng, actor_key, critic_key, value_key = jax.random.split(rng, 4)
+    rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
     actor_model = GaussianPolicy(
@@ -297,7 +297,7 @@ def create_trainer(
         action_dim=action_dim,
     )
 
-    actor_params = actor_model.init(actor_key, observations)
+    actor_params = actor_model.init(actor_rng, observations)
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_params,
@@ -307,12 +307,12 @@ def create_trainer(
     critic_model = DoubleCritic(config.critic_hidden_dims)
     critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_model.init(critic_key, observations, actions),
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     target_critic = TrainState.create(
         apply_fn=critic_model.apply,
-        params=critic_model.init(critic_key, observations, actions),
+        params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # create immutable config for AWAC.
