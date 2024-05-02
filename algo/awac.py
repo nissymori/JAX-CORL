@@ -204,7 +204,10 @@ class AWACTrainer(NamedTuple):
     critic: TrainState
     target_critic: TrainState
     actor: TrainState
-    config: flax.core.FrozenDict
+    # hyperparameters
+    beta: float = 2.0
+    tau: float = 0.005
+    discount: float = 0.99
 
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
@@ -224,7 +227,7 @@ class AWACTrainer(NamedTuple):
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
-            weights = jnp.exp(adv / agent.config["beta"])
+            weights = jnp.exp(adv / agent.beta)
 
             weights = jax.lax.stop_gradient(weights)
 
@@ -245,7 +248,7 @@ class AWACTrainer(NamedTuple):
                 agent.target_critic.params, batch.next_observations, next_actions
             )
             next_q = jnp.minimum(n_q_1, n_q_2)
-            q_target = batch.rewards + agent.config["discount"] * batch.masks * next_q
+            q_target = batch.rewards + agent.discount * batch.masks * next_q
             q_target = jax.lax.stop_gradient(q_target)
 
             q_1, q_2 = agent.critic.apply_fn(
@@ -277,7 +280,7 @@ class AWACTrainer(NamedTuple):
             new_target_critic = target_update(
                 agent.critic,
                 agent.target_critic,
-                agent.config["target_update_rate"],
+                agent.tau,
             )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
         return agent._replace(target_critic=new_target_critic), {}
@@ -319,6 +322,7 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
+    # initialize target critic
     target_critic = TrainState.create(
         apply_fn=critic_model.apply,
         params=critic_model.init(critic_rng, observations, actions),
@@ -330,7 +334,9 @@ def create_trainer(
         critic=critic,
         target_critic=target_critic,
         actor=actor,
-        config=config,
+        beta=config.beta,
+        tau=config.tau,
+        discount=config.discount,
     )
 
 

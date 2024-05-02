@@ -226,12 +226,16 @@ class IQLTrainer(NamedTuple):
     target_critic: TrainState
     value: TrainState
     actor: TrainState
-    config: flax.core.FrozenDict
+    # hyperparameters
+    expectile: float = 0.7  
+    temperature: float = 3.0 
+    tau: float = 0.005
+    discount: float = 0.99
 
     def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
-            target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
+            target_q = batch.rewards + agent.discount * batch.masks * next_v
             q1, q2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -248,7 +252,7 @@ class IQLTrainer(NamedTuple):
             )
             q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
             v = agent.value.apply_fn(value_params, batch.observations)
-            value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
+            value_loss = expectile_loss(q - v, agent.expectile).mean()
             return value_loss
 
         new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
@@ -261,7 +265,7 @@ class IQLTrainer(NamedTuple):
                 agent.critic.params, batch.observations, batch.actions
             )
             q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * agent.config["temperature"])
+            exp_a = jnp.exp((q - v) * agent.emperature)
             exp_a = jnp.minimum(exp_a, 100.0)
 
             dist = agent.actor.apply_fn(actor_params, batch.observations)
@@ -291,7 +295,7 @@ class IQLTrainer(NamedTuple):
             agent, actor_loss = agent.update_actor(batch)
             agent, critic_loss = agent.update_critic(batch)
             new_target_critic = target_update(
-                agent.critic, agent.target_critic, agent.config["tau"]
+                agent.critic, agent.target_critic, agent.tau
             )
         return agent._replace(target_critic=new_target_critic), {}
 
@@ -350,14 +354,16 @@ def create_trainer(
         params=value_model.init(value_rng, observations),
         tx=optax.adam(learning_rate=config.value_lr),
     )
-    config = flax.core.FrozenDict(config.dict())  # convert to flax FrozenDict
     return IQLTrainer(
         rng,
         critic=critic,
         target_critic=target_critic,
         value=value,
         actor=actor,
-        config=config,
+        expectile=config.expectile,
+        temperature=config.temperature,
+        tau=config.tau,
+        discount=config.discount,
     )
 
 

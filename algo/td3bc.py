@@ -186,8 +186,14 @@ class TD3BCTrainer(NamedTuple):
     target_actor: TrainState
     target_critic: TrainState
     update_idx: jnp.int32
-    config: flax.core.FrozenDict
-    max_action: float = 1.0
+    max_action: float = 1.0 
+    # hyperparameters
+    alpha: float = 2.5  
+    policy_noise_std: float = 0.2  
+    policy_noise_clip: float = 0.5  
+    tau: float = 0.005  
+    discount: float = 0.99
+
 
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
@@ -200,7 +206,7 @@ class TD3BCTrainer(NamedTuple):
             )
 
             mean_abs_q = jax.lax.stop_gradient(jnp.abs(q_value).mean())
-            loss_lambda = agent.config["alpha"] / mean_abs_q
+            loss_lambda = agent.alpha / mean_abs_q
 
             bc_loss = jnp.square(predicted_action - batch.actions).mean()
             loss_actor = -1.0 * q_value.mean() * loss_lambda + bc_loss
@@ -220,12 +226,12 @@ class TD3BCTrainer(NamedTuple):
                 agent.target_actor.params, batch.next_observations
             )
             policy_noise = (
-                agent.config["policy_noise_std"]
+                agent.policy_noise_std
                 * agent.max_action
                 * jax.random.normal(rng, batch.actions.shape)
             )
             target_next_action = target_next_action + policy_noise.clip(
-                -agent.config["policy_noise_clip"], agent.config["policy_noise_clip"]
+                -agent.policy_noise_clip, agent.policy_noise_clip
             )
             target_next_action = target_next_action.clip(
                 -agent.max_action, agent.max_action
@@ -235,7 +241,7 @@ class TD3BCTrainer(NamedTuple):
             )
             target = (
                 batch.rewards[..., None]
-                + agent.config["discount"]
+                + agent.discount
                 * jnp.minimum(q_next_1, q_next_2)
                 * batch.masks[..., None]
             )
@@ -268,10 +274,10 @@ class TD3BCTrainer(NamedTuple):
             if _ % policy_freq == 0:
                 agent, actor_loss = agent.update_actor(batch, actor_rng)
                 new_target_critic = target_update(
-                    agent.critic, agent.target_critic, agent.config["tau"]
+                    agent.critic, agent.target_critic, agent.tau
                 )
                 new_target_actor = target_update(
-                    agent.actor, agent.target_actor, agent.config["tau"]
+                    agent.actor, agent.target_actor, agent.tau
                 )
                 agent = agent._replace(
                     target_critic=new_target_critic,
@@ -326,15 +332,17 @@ def create_trainer(
         params=actor_model.init(actor_rng, observations),
         tx=optax.adam(config.actor_lr),
     )
-
-    config = flax.core.FrozenDict(config.dict())  # convert to flax FrozenDict
     return TD3BCTrainer(
         actor=actor_train_state,
         critic=critic_train_state,
         target_actor=target_actor_train_state,
         target_critic=target_critic_train_state,
         update_idx=0,
-        config=config,
+        alpha=config.alpha,
+        policy_noise_std=config.policy_noise_std,
+        policy_noise_clip=config.policy_noise_clip,
+        tau=config.tau,
+        discount=config.discount,
     )
 
 
@@ -363,7 +371,7 @@ if __name__ == "__main__":
     env = gym.make(config.env_name)
     rng = jax.random.PRNGKey(config.seed)
 
-    # initialize data and update state
+    # initialize data and agent
     dataset, obs_mean, obs_std = get_dataset(env, config)
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent = create_trainer(example_batch.observations, example_batch.actions, config)
