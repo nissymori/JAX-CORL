@@ -27,7 +27,7 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |hopper-medium-v2|   |   | $46.51\pm4.57$  |   
 |hopper-medium-expert-v2|   |   |$105.47\pm5.03$   |   
 |walker2d-medium-v2|   |   |  $72.73\pm4.66$ |   
-|walker2d-medium-expert-v2|   |   | $$  |   
+|walker2d-medium-expert-v2|   |   | $109.17\pm0.71$  |   
 
 ### Training speed with different `n_updates`
 Rough code for our update logic
