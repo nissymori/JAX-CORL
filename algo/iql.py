@@ -420,9 +420,13 @@ if __name__ == "__main__":
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
+        epo_sta = time.time()
         agent, update_info = agent.update_n_times(
             dataset, subkey, config.batch_size, config.n_updates
         )
+        epo_end = time.time()
+        if i == 1:
+            first_jit_time = epo_end - epo_sta
         """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
@@ -433,24 +437,16 @@ if __name__ == "__main__":
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
             normalized_score = evaluate(
-                policy_fn, env, num_episodes=config.eval_episodes
+                policy_fn, env, config.eval_episodes, obs_mean, obs_std
             )
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
         """
     end = time.time()
-    policy_fn = partial(
-        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
-    )
-    normalized_score = evaluate(
-        policy_fn,
-        env,
-        num_episodes=config.eval_episodes,
-    )
     wandb.log(
         {
-            f"{config.env_name}/final_normalized_score": normalized_score,
-            f"{config.env_name}/time": end - start,
+            f"{config.algo}/training_time": end - start,
+            f"{config.algo}/first_jit_time": first_jit_time,
         }
     )
