@@ -47,8 +47,8 @@ class IQLConfig(BaseModel):
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
     # IQL SPECIFIC
-    expectile: float = 0.7  # for Hopper 0.5 produce better result from CORL
-    temperature: float = 3.0  # for Hopper 6.0 produce better result from CORL
+    expectile: float = 0.7  # FYI: for Hopper-me, 0.5 produce better result from CORL
+    temperature: float = 3.0  # FYI: for Hopper-me, 6.0 produce better result from CORL
     tau: float = 0.005
     discount: float = 0.99
 
