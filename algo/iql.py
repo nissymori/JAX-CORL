@@ -260,7 +260,7 @@ class IQLTrainer(NamedTuple):
                 agent.critic.params, batch.observations, batch.actions
             )
             q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * agent.emperature)
+            exp_a = jnp.exp((q - v) * agent.temperature)
             exp_a = jnp.minimum(exp_a, 100.0)
 
             dist = agent.actor.apply_fn(actor_params, batch.observations)
@@ -362,12 +362,15 @@ def create_trainer(
     )
 
 
-def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
+def evaluate(
+    policy_fn, env: gym.Env, num_episodes: int, obs_mean: float, obs_std: float
+) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
         observation, done = env.reset(), False
         while not done:
+            observation = (observation - obs_mean) / (obs_std + 1e-5)
             action = policy_fn(observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
@@ -392,7 +395,7 @@ if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset: Transition = get_dataset(env, config)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
 
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
@@ -419,7 +422,11 @@ if __name__ == "__main__":
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
             normalized_score = evaluate(
-                policy_fn, env, num_episodes=config.eval_episodes
+                policy_fn,
+                env,
+                num_episodes=config.eval_episodes,
+                obs_mean=obs_mean,
+                obs_std=obs_std,
             )
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
