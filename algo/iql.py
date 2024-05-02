@@ -450,7 +450,6 @@ if __name__ == "__main__":
     )
     wandb.log(
         {
-            f"{config.env_name}/final_normalized_score": normalized_score,
-            f"{config.env_name}/time": end - start,
+            f"{config.env_name}/final_normalized_score(original hparams)": normalized_score,
         }
     )
