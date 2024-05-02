@@ -53,7 +53,7 @@ class Trainer(Namedtuple):
         agent = update_critic(batch)
       return agent
 ```
-We measured the training time and first jit time for different `n_updates`. See the figures below. The GPU we used was GeForce GTX 1080 Ti x4
+We measured the training time and first jit time for different `n_updates`. See the figures below. The GPU we used was [GeForce GTX 1080 Ti x4](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
 
 # See also
