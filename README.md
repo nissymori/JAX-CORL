@@ -81,7 +81,7 @@ def create_trainer(...):
         discount=discount
     )
 ```
-For all algorithms, we have `Trainer` class (`TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class. This includes setting up the models and defining hyperparameters.
+For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class. This includes setting up the models and defining hyperparameters.
 
 # See also
 **Great Offline RL libraries**
