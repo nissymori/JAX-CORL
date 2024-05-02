@@ -32,9 +32,13 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 
 ```
 
-# How to use this codebase
-You can use this codebase on its own as baseline for D4RL. However, some people want to develop new algorithm based on our code or use this code for other dataset than D4RL.
-For those who would like to use this code for your own research, we explain the shared structure of the code. 
+# How to use this codebase for your own research
+
+The provided text explains how to use a specific codebase for research purposes, particularly in the context of D4RL datasets, but also allows for customization for other datasets. Here's a clarified version of the text:
+
+This codebase can be used independently as a baseline for D4RL projects. It is also designed to be flexible, allowing users to develop new algorithms or adapt it for datasets other than D4RL.
+
+For researchers interested in using this code for their projects, we provide a detailed explanation of the code's shared structure:
 ##### Data structure
 ```py
 Transition(NamedTuple):
@@ -48,10 +52,10 @@ def get_dataset(...) -> Transition:
     ...
     return dataset
 ```
-For the dataset we use the class `Transitions` based on the NamedTuple above. Though we focus on D4RL, as long as you can implement `get_dataset` function to output `Transition` for your own desired dataset, you can use our implementation.
+The code includes a Transition class, defined as a NamedTuple, which includes fields for observations, actions, rewards, next observations, and done flags. The get_dataset function is expected to output data in the Transition format, making it adaptable to any dataset that conforms to this structure.
 
 ##### Trainer class
-```
+```py
 class Trainer(NamedTuple):
     actor: TrainState
     critic: TrainState
@@ -66,8 +70,8 @@ class Trainer(NamedTuple):
         ...
         return agent
 
-    @partial(jax.jit, static_argnames("n_updates")
-    def update_n_times(agent, data, n_updates)
+    @partial(jax.jit, static_argnames("n_jitted_updates")
+    def update_n_times(agent, data, n_jitted_updates)
       for _ in range(n_updates):
         batch = data.sample()
         agent = update_actor(batch)
@@ -82,7 +86,7 @@ def create_trainer(...):
         discount=discount
     )
 ```
-For all algorithms, we have `Trainer` class (`TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. Therefore, you can use the class outside of this files if you implement `create_trainer` function satisfying required for `Trainer` class (models and hyperparameters).
+For all algorithms, we have `Trainer` class (`TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class. This includes setting up the models and defining hyperparameters.
 
 # See also
 **Great Offline RL libraries**
