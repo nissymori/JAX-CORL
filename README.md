@@ -13,7 +13,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|-|
 |[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-|-|
 
-Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs]((https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4)).
+Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
 # Reports with D4RL mujoco
 
