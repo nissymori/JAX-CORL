@@ -13,7 +13,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|-|
 |[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-|-|
 
-The training time is the fastest w.r.t. the number of steps in a jitted epoch (`n_updates`). refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#training-speed-with-different-n_updates) for more details.
+We measured the training time (includes compile time) and compile time for different `n_updates`. See the figures below. The GPU we used was [GeForce GTX 1080 Ti x4](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
 # Reports with D4RL mujoco
 
@@ -29,20 +29,42 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |   
 |walker2d-medium-expert-v2| $78.81\pm27.89$  | $109.08\pm0.25$  | $109.17\pm0.71$  |   
 
-### Training speed with different `n_updates`
-Rough code for our update logic
+
+```
+
+# How to use this codebase
+You can use this codebase on its own as baseline for D4RL. However, some people want to develop new algorithm based on our code or use this code for other dataset than D4RL.
+For those who would like to use this code for your own research, we explain the shared structure of the code. 
+##### Data structure
 ```py
-class Trainer(Namedtuple):
-    critic: TrainState
+Transition(NamedTuple):
+    observations: jnp.ndarray
+    actions: jnp.ndarray
+    rewards: jnp.ndarray
+    next_observations: jnp.ndarray
+    dones: jnp.ndarray
+
+def get_dataset(...) -> Transition:
+    ...
+    return dataset
+```
+For the dataset we use the class `Transitions` based on the NamedTuple above. Though we focus on D4RL, as long as you can implement `get_dataset` function to output `Transition` for your own desired dataset, you can use our implementation.
+
+##### Trainer class
+```
+class Trainer(NamedTuple):
     actor: TrainState
+    critic: TrainState
+    # hyper parameter
+    discount: float = 0.99
+    ...
+    def update_actor(agent, batch: Transition):
+        ...
+        return agent
 
-    def update_actor(agent, batch):
-      ...
-      return agent
-
-    def update_critic(agent, batch):
-      ...
-      return agent
+    def update_critic(agent, batch: Transition):
+        ...
+        return agent
 
     @partial(jax.jit, static_argnames("n_updates")
     def update_n_times(agent, data, n_updates)
@@ -51,9 +73,16 @@ class Trainer(Namedtuple):
         agent = update_actor(batch)
         agent = update_critic(batch)
       return agent
-```
-We measured the training time (includes compile time) and compile time for different `n_updates`. See the figures below. The GPU we used was [GeForce GTX 1080 Ti x4](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
+def create_trainer(...):
+    # initialize models...
+    return Trainer(
+        acotor=actor,
+        critic=critic,
+        discount=discount
+    )
+```
+For all algorithms, we have `Trainer` class (`TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. Therefore, you can use the class outside of this files if you implement `create_trainer` function satisfying required for `Trainer` class (models and hyperparameters).
 
 # See also
 **Great Offline RL libraries**
@@ -79,7 +108,7 @@ We measured the training time (includes compile time) and compile time for diffe
 
 # Credits
 - This project is inspired by [CORL](https://github.com/tinkoff-ai/CORL), a clean single-file implementations of offline RL algorithm in pytorch.
-- I would like to thank [@JohannesAck](https://github.com/johannesack) for his TD3-BC code base and helpful advices.
+- I would like to thank [@JohannesAck](https://github.com/johannesack) for his TD3-BC codebase and helpful advices.
 - The IQL implementation is based on [implicit_q_learning](https://github.com/ikostrikov/implicit_q_learning).
 - AWAC implementation is based on [jaxrl](https://github.com/ikostrikov/jaxrl) and [CORL](https://github.com/tinkoff-ai/CORL).
 
