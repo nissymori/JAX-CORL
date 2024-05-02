@@ -53,7 +53,7 @@ class Trainer(Namedtuple):
         agent = update_critic(batch)
       return agent
 ```
-We measured the training time and first jit time for different `n_updates`. See the figures below.
+We measured the training time and first jit time for different `n_updates`. See the figures below. The GPU we used was GeForce GTX 1080 Ti x4
 
 
 # See also
