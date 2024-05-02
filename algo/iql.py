@@ -404,7 +404,7 @@ if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset: Transition = get_dataset(env, config)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
 
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
