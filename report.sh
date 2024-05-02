@@ -1,4 +1,5 @@
 # IQL
+cd algo
 for seed in 1 2 3 4 5
 do  
     python iql.py env_name=hopper-medium-expert-v2 seed=$seed project=report

@@ -415,3 +415,4 @@ if __name__ == "__main__":
             f"{config.env_name}/final_normalized_score(original hparams)": normalized_score,
         }
     )
+    wandb.finish()
