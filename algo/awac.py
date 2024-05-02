@@ -386,6 +386,7 @@ if __name__ == "__main__":
             config.target_update_freq,
             config.n_updates,
         )
+        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
@@ -400,6 +401,7 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
+        """
     end = time.time()
     policy_fn = partial(
         agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
