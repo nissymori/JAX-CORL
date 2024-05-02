@@ -22,12 +22,12 @@ Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as t
 We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |env|AWAC|IQL|TD3+BC|
 |---|---|---|---|
-|halfcheetah-medium-v2|  |   |$48.12\pm0.42$   |   
-|halfcheetah-medium-expert-v2|   |   | $92.99\pm 0.11$  |   
-|hopper-medium-v2|   |   | $46.51\pm4.57$  |   
-|hopper-medium-expert-v2|   |   |$105.47\pm5.03$   |   
-|walker2d-medium-v2|   |   |  $72.73\pm4.66$ |   
-|walker2d-medium-expert-v2|   |   | $109.17\pm0.71$  |   
+|halfcheetah-medium-v2|  |$43.78\pm0.39$   |$48.12\pm0.42$   |   
+|halfcheetah-medium-expert-v2|  | $89.05\pm4.11$ | $92.99\pm 0.11$  |   
+|hopper-medium-v2|   | $46.51\pm4.56$  | $46.51\pm4.57$  |   
+|hopper-medium-expert-v2|   | $  |$105.47\pm5.03$   |   
+|walker2d-medium-v2|   | $77.87\pm3.16$$  |  $72.73\pm4.66$ |   
+|walker2d-medium-expert-v2|   | $109.08\pm0.25$  | $109.17\pm0.71$  |   
 
 ### Training speed with different `n_updates`
 Rough code for our update logic
