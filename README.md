@@ -5,13 +5,13 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 💠 Focus on **a few popular algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms)
 
 # Algorithms
-|Algorithm|implementation|training time|
-|---|---|---|
-|[AWAC](https://arxiv.org/abs/2006.09359)| [algo/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/awac.py) ||
-|[IQL](https://arxiv.org/abs/2110.06169)|  [algo/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/iql.py)   || 
-|[TD3-BC](https://arxiv.org/pdf/2106.06860)| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  ||  
-|[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|   
-|[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-| 
+|Algorithm|implementation|training time| wandb |
+|---|---|---|---|
+|[AWAC](https://arxiv.org/abs/2006.09359)| [algo/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/awac.py) || [link](https://api.wandb.ai/links/nissymori/2i66gkvj) |
+|[IQL](https://arxiv.org/abs/2110.06169)|  [algo/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/iql.py)   || [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
+|[TD3-BC](https://arxiv.org/pdf/2106.06860)| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  || [link](https://api.wandb.ai/links/nissymori/h21py327) |
+|[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|-|
+|[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-|-|
 
 The training time is the fastest w.r.t. the number of steps in a jitted epoch (`n_updates`). refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#training-speed-with-different-n_updates) for more details.
 
