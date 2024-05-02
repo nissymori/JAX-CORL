@@ -114,8 +114,8 @@ class GaussianPolicy(nn.Module):
         means = nn.Dense(
             self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
         )(outputs)
-        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
 
+        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
 
         distribution = distrax.MultivariateNormalDiag(
@@ -128,9 +128,8 @@ class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
     rewards: jnp.ndarray
-    masks: jnp.ndarray
-    dones_float: jnp.ndarray
     next_observations: jnp.ndarray
+    dones: jnp.ndarray
 
 
 def get_dataset(
@@ -147,15 +146,14 @@ def get_dataset(
         np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
         axis=-1,
     )
-    dones_float = 1.0 - same_obs.astype(np.float32)
-    dones_float[-1] = 1
+    dones = 1.0 - same_obs.astype(np.float32)
+    dones[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
-        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
-        dones_float=jnp.array(dones_float, dtype=jnp.float32),
+        dones=jnp.array(dones, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
     # shuffle data and select the first data_size samples
@@ -245,7 +243,7 @@ class AWACTrainer(NamedTuple):
                 agent.target_critic.params, batch.next_observations, next_actions
             )
             next_q = jnp.minimum(n_q_1, n_q_2)
-            q_target = batch.rewards + agent.discount * batch.masks * next_q
+            q_target = batch.rewards + agent.discount * (1 - batch.dones) * next_q
             q_target = jax.lax.stop_gradient(q_target)
 
             q_1, q_2 = agent.critic.apply_fn(

@@ -111,10 +111,9 @@ class TD3Actor(nn.Module):
 class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
-    next_observations: jnp.ndarray
     rewards: jnp.ndarray
-    dones_float: jnp.ndarray
-    masks: jnp.ndarray
+    next_observations: jnp.ndarray
+    dones: jnp.ndarray
 
 
 def get_dataset(
@@ -131,15 +130,14 @@ def get_dataset(
         np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
         axis=-1,
     )
-    dones_float = 1.0 - same_obs.astype(np.float32)
-    dones_float[-1] = 1
+    dones = 1.0 - same_obs.astype(np.float32)
+    dones[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
-        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
-        dones_float=jnp.array(dones_float, dtype=jnp.float32),
+        dones=jnp.array(dones, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
     # shuffle data and select the first data_size samples
@@ -237,12 +235,9 @@ class TD3BCTrainer(NamedTuple):
             q_next_1, q_next_2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.next_observations, target_next_action
             )
-            target = (
-                batch.rewards[..., None]
-                + agent.discount
-                * jnp.minimum(q_next_1, q_next_2)
-                * batch.masks[..., None]
-            )
+            target = batch.rewards[..., None] + agent.discount * jnp.minimum(
+                q_next_1, q_next_2
+            ) * (1 - batch.dones[..., None])
             target = jax.lax.stop_gradient(target)  # stop gradient for target
             value_loss_1 = jnp.square(q_pred_1 - target)
             value_loss_2 = jnp.square(q_pred_2 - target)

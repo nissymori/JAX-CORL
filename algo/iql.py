@@ -144,9 +144,8 @@ class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
     rewards: jnp.ndarray
-    masks: jnp.ndarray
-    dones_float: jnp.ndarray
     next_observations: jnp.ndarray
+    dones: jnp.ndarray
 
 
 def get_dataset(
@@ -163,15 +162,13 @@ def get_dataset(
         np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
         axis=-1,
     )
-    dones_float = 1.0 - same_obs.astype(np.float32)
-    dones_float[-1] = 1
+    dones = 1.0 - same_obs.astype(np.float32)
+    dones[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
-        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
-        dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
     # shuffle data and select the first data_size samples
@@ -232,7 +229,7 @@ class IQLTrainer(NamedTuple):
     def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
-            target_q = batch.rewards + agent.discount * batch.masks * next_v
+            target_q = batch.rewards + agent.discount * (1 - batch.dones) * next_v
             q1, q2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -382,7 +379,7 @@ def get_normalization(dataset: Transition) -> float:
     dataset = jax.tree_map(lambda x: np.array(x), dataset)
     returns = []
     ret = 0
-    for r, term in zip(dataset.rewards, dataset.dones_float):
+    for r, term in zip(dataset.rewards, dataset.dones):
         ret += r
         if term:
             returns.append(ret)
