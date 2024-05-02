@@ -29,7 +29,7 @@ class TD3BCConfig(BaseModel):
     # GENERAL
     algo: str = "TD3-BC"
     project: str = "train-TD3-BC"
-    env_name: str = "hopper-medium-expert-v2"
+    env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = 42
     eval_episodes: int = 5
     log_interval: int = 100000
