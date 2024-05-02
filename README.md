@@ -18,6 +18,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 
 # Reports with D4RL mujoco
 
+### Normalized Score
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
 We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |env|AWAC|IQL|TD3+BC|
@@ -28,6 +29,32 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |hopper-medium-v2|   |   |   |   
 |walker2d-medium-expert-v2|   |   |   |   
 |walker2d-medium-v2|   |   |   |   
+
+### Training speed with different `n_updates`
+Rough code for our update logic
+```py
+class Trainer(Namedtuple):
+    critic: TrainState
+    actor: TrainState
+
+    def update_actor(agent, batch):
+      ...
+      return agent
+
+    def update_critic(agent, batch):
+      ...
+      return agent
+
+    @partial(jax.jit, static_argnames("n_updates")
+    def update_n_times(agent, data, n_updates)
+      for _ in range(n_updates):
+        batch = data.sample()
+        agent = update_actor(batch)
+        agent = update_critic(batch)
+      return agent
+```
+We measured the training time and first jit time for different `n_updates`. See the figures below.
+
 
 # See also
 **Great Offline RL libraries**
