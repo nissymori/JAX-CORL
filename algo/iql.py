@@ -7,17 +7,18 @@ from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
 import d4rl
-import distrax
-import flax
-import flax.linen as nn
 import gym
+import numpy as np
 import jax
 import jax.numpy as jnp
-import numpy as np
+import flax
+import flax.linen as nn
+from flax.training.train_state import TrainState
 import optax
+import distrax
+
 import tqdm
 import wandb
-from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -30,14 +31,14 @@ class IQLConfig(BaseModel):
     # GENERAL
     algo: str = "IQL"
     project: str = "train-IQL"
-    env_name: str = "hopper-medium-expert-v2"
+    env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = 42
     eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
     batch_size: int = 256
     max_steps: int = int(1e6)
-    n_updates: int = 8
+    n_jitted_updates: int = 8
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
@@ -67,16 +68,11 @@ class MLP(nn.Module):
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
 
-    def setup(self):
-        self.layers = [
-            nn.Dense(size, kernel_init=self.kernel_init) for size in self.hidden_dims
-        ]
-
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i + 1 < len(self.layers) or self.activate_final:
+        for i, hidden_dims in enumerate(self.hidden_dims):
+            x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
+            if i + 1 < len(self.hidden_dims) or self.activate_final:
                 x = self.activations(x)
         return x
 
@@ -149,13 +145,12 @@ class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
     rewards: jnp.ndarray
-    masks: jnp.ndarray
-    dones_float: jnp.ndarray
     next_observations: jnp.ndarray
+    dones: jnp.ndarray
 
 
 def get_dataset(
-    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config: IQLConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -168,28 +163,24 @@ def get_dataset(
         np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
         axis=-1,
     )
-    dones_float = 1.0 - same_obs.astype(np.float32)
-    dones_float[-1] = 1
+    dones = 1.0 - same_obs.astype(np.float32)
+    dones[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
-        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
-        dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
+        dones=jnp.array(dones, dtype=jnp.float32),
     )
-
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))
-    # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
-
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -231,12 +222,16 @@ class IQLTrainer(NamedTuple):
     target_critic: TrainState
     value: TrainState
     actor: TrainState
-    config: flax.core.FrozenDict
+    # hyperparameters
+    expectile: float = 0.7
+    temperature: float = 3.0
+    tau: float = 0.005
+    discount: float = 0.99
 
     def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
         def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
-            target_q = batch.rewards + agent.config["discount"] * batch.masks * next_v
+            target_q = batch.rewards + agent.discount * (1 - batch.dones) * next_v
             q1, q2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -253,7 +248,7 @@ class IQLTrainer(NamedTuple):
             )
             q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
             v = agent.value.apply_fn(value_params, batch.observations)
-            value_loss = expectile_loss(q - v, agent.config["expectile"]).mean()
+            value_loss = expectile_loss(q - v, agent.expectile).mean()
             return value_loss
 
         new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
@@ -266,7 +261,7 @@ class IQLTrainer(NamedTuple):
                 agent.critic.params, batch.observations, batch.actions
             )
             q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * agent.config["temperature"])
+            exp_a = jnp.exp((q - v) * agent.temperature)
             exp_a = jnp.minimum(exp_a, 100.0)
 
             dist = agent.actor.apply_fn(actor_params, batch.observations)
@@ -283,9 +278,9 @@ class IQLTrainer(NamedTuple):
         dataset: Transition,
         rng: jax.random.PRNGKey,
         batch_size: int,
-        n_updates: int,
+        n_jitted_updates: int,
     ) -> Tuple["IQLTrainer", Dict]:
-        for _ in range(n_updates):
+        for _ in range(n_jitted_updates):
             rng, subkey = jax.random.split(rng)
             batch_indices = jax.random.randint(
                 subkey, (batch_size,), 0, len(dataset.observations)
@@ -296,7 +291,7 @@ class IQLTrainer(NamedTuple):
             agent, actor_loss = agent.update_actor(batch)
             agent, critic_loss = agent.update_critic(batch)
             new_target_critic = target_update(
-                agent.critic, agent.target_critic, agent.config["target_update_rate"]
+                agent.critic, agent.target_critic, agent.tau
             )
         return agent._replace(target_critic=new_target_critic), {}
 
@@ -355,31 +350,28 @@ def create_trainer(
         params=value_model.init(value_rng, observations),
         tx=optax.adam(learning_rate=config.value_lr),
     )
-    # create immutable config for IQL.
-    config = flax.core.FrozenDict(
-        dict(
-            discount=config.discount,
-            temperature=config.temperature,
-            expectile=config.expectile,
-            target_update_rate=config.tau,
-        )
-    )  # make sure config is immutable
     return IQLTrainer(
         rng,
         critic=critic,
         target_critic=target_critic,
         value=value,
         actor=actor,
-        config=config,
+        expectile=config.expectile,
+        temperature=config.temperature,
+        tau=config.tau,
+        discount=config.discount,
     )
 
 
-def evaluate(policy_fn, env: gym.Env, num_episodes: int) -> float:
+def evaluate(
+    policy_fn, env: gym.Env, num_episodes: int, obs_mean: float, obs_std: float
+) -> float:
     episode_returns = []
     for _ in range(num_episodes):
         episode_return = 0
         observation, done = env.reset(), False
         while not done:
+            observation = (observation - obs_mean) / (obs_std + 1e-5)
             action = policy_fn(observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
@@ -392,7 +384,7 @@ def get_normalization(dataset: Transition) -> float:
     dataset = jax.tree_map(lambda x: np.array(x), dataset)
     returns = []
     ret = 0
-    for r, term in zip(dataset.rewards, dataset.dones_float):
+    for r, term in zip(dataset.rewards, dataset.dones):
         ret += r
         if term:
             returns.append(ret)
@@ -404,11 +396,11 @@ if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
-    dataset: Transition = get_dataset(env, config)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
 
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
-
+    # create agent
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent: IQLTrainer = create_trainer(
         example_batch.observations,
@@ -416,14 +408,12 @@ if __name__ == "__main__":
         config,
     )
 
-    num_steps = config.max_steps // config.n_updates
-    start = time.time()
+    num_steps = config.max_steps // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
         agent, update_info = agent.update_n_times(
-            dataset, subkey, config.batch_size, config.n_updates
+            dataset, subkey, config.batch_size, config.n_jitted_updates
         )
-        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
@@ -433,24 +423,13 @@ if __name__ == "__main__":
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
             normalized_score = evaluate(
-                policy_fn, env, num_episodes=config.eval_episodes
+                policy_fn,
+                env,
+                num_episodes=config.eval_episodes,
+                obs_mean=obs_mean,
+                obs_std=obs_std,
             )
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
-        """
-    end = time.time()
-    policy_fn = partial(
-        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
-    )
-    normalized_score = evaluate(
-        policy_fn,
-        env,
-        num_episodes=config.eval_episodes,
-    )
-    wandb.log(
-        {
-            f"{config.env_name}/final_normalized_score": normalized_score,
-            f"{config.env_name}/time": end - start,
-        }
-    )
+    wandb.finish()

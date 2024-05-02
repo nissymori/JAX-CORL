@@ -7,17 +7,18 @@ from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
 import d4rl
-import distrax
-import flax
-import flax.linen as nn
 import gym
+import numpy as np
 import jax
 import jax.numpy as jnp
-import numpy as np
+import flax
+import flax.linen as nn
+from flax.training.train_state import TrainState
 import optax
+import distrax
+
 import tqdm
 import wandb
-from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -37,7 +38,7 @@ class AWACConfig(BaseModel):
     eval_interval: int = 10000
     batch_size: int = 256
     max_steps: int = int(1e6)
-    n_updates: int = 8
+    n_jitted_updates: int = 8
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
@@ -114,8 +115,8 @@ class GaussianPolicy(nn.Module):
         means = nn.Dense(
             self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
         )(outputs)
-        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
 
+        log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
 
         distribution = distrax.MultivariateNormalDiag(
@@ -128,13 +129,12 @@ class Transition(NamedTuple):
     observations: jnp.ndarray
     actions: jnp.ndarray
     rewards: jnp.ndarray
-    masks: jnp.ndarray
-    dones_float: jnp.ndarray
     next_observations: jnp.ndarray
+    dones: jnp.ndarray
 
 
 def get_dataset(
-    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config: AWACConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -147,28 +147,24 @@ def get_dataset(
         np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
         axis=-1,
     )
-    dones_float = 1.0 - same_obs.astype(np.float32)
-    dones_float[-1] = 1
+    dones = 1.0 - same_obs.astype(np.float32)
+    dones[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
-        masks=jnp.array(1.0 - dones_float, dtype=jnp.float32),
-        dones_float=jnp.array(dones_float, dtype=jnp.float32),
+        dones=jnp.array(dones, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
-
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))
-    # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
-
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -204,7 +200,10 @@ class AWACTrainer(NamedTuple):
     critic: TrainState
     target_critic: TrainState
     actor: TrainState
-    config: flax.core.FrozenDict
+    # hyperparameters
+    beta: float = 2.0
+    tau: float = 0.005
+    discount: float = 0.99
 
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
@@ -224,7 +223,7 @@ class AWACTrainer(NamedTuple):
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
-            weights = jnp.exp(adv / agent.config["beta"])
+            weights = jnp.exp(adv / agent.beta)
 
             weights = jax.lax.stop_gradient(weights)
 
@@ -245,7 +244,7 @@ class AWACTrainer(NamedTuple):
                 agent.target_critic.params, batch.next_observations, next_actions
             )
             next_q = jnp.minimum(n_q_1, n_q_2)
-            q_target = batch.rewards + agent.config["discount"] * batch.masks * next_q
+            q_target = batch.rewards + agent.discount * (1 - batch.dones) * next_q
             q_target = jax.lax.stop_gradient(q_target)
 
             q_1, q_2 = agent.critic.apply_fn(
@@ -258,15 +257,15 @@ class AWACTrainer(NamedTuple):
         new_critic, critic_loss = update_by_loss_grad(agent.critic, get_critic_loss)
         return agent._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(3, 4, 5))
+    @partial(jax.jit, static_argnums=(3, 4))
     def update_n_times(
         agent,
         dataset: Transition,
         rng: jax.random.PRNGKey,
         batch_size: int,
-        n_updates: int,
+        n_jitted_updates: int,
     ) -> Tuple["AWACTrainer", Dict]:
-        for _ in range(n_updates):
+        for _ in range(n_jitted_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             batch_indices = jax.random.randint(
                 batch_rng, (batch_size,), 0, len(dataset.observations)
@@ -277,7 +276,7 @@ class AWACTrainer(NamedTuple):
             new_target_critic = target_update(
                 agent.critic,
                 agent.target_critic,
-                agent.config["target_update_rate"],
+                agent.tau,
             )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
         return agent._replace(target_critic=new_target_critic), {}
@@ -319,24 +318,20 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
+    # initialize target critic
     target_critic = TrainState.create(
         apply_fn=critic_model.apply,
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-    config = flax.core.FrozenDict(
-        dict(
-            discount=config.discount,
-            beta=config.beta,
-            target_update_rate=config.tau,
-        )
-    )  # make sure config is immutable
     return AWACTrainer(
         rng,
         critic=critic,
         target_critic=target_critic,
         actor=actor,
-        config=config,
+        beta=config.beta,
+        tau=config.tau,
+        discount=config.discount,
     )
 
 
@@ -365,7 +360,7 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
-
+    # create agent
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent: AWACTrainer = create_trainer(
         example_batch.observations,
@@ -373,7 +368,7 @@ if __name__ == "__main__":
         config,
     )
 
-    num_steps = config.max_steps // config.n_updates
+    num_steps = config.max_steps // config.n_jitted_updates
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
@@ -381,9 +376,8 @@ if __name__ == "__main__":
             dataset,
             subkey,
             config.batch_size,
-            config.n_updates,
+            config.n_jitted_updates,
         )
-        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
@@ -398,21 +392,4 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
-        """
-    end = time.time()
-    policy_fn = partial(
-        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
-    )
-    normalized_score = evaluate(
-        policy_fn,
-        env,
-        num_episodes=config.eval_episodes,
-        obs_mean=obs_mean,
-        obs_std=obs_std,
-    )
-    wandb.log(
-        {
-            f"{config.env_name}/final_normalized_score": normalized_score,
-            f"{config.env_name}/time": end - start,
-        }
-    )
+    wandb.finish()

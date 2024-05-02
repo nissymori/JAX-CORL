@@ -12,3 +12,4 @@ check:
 	flake8 --config pyproject.toml --ignore E203,E501,W503,E741 algo
 	mypy --config pyproject.toml algo
 	isort algo --check --diff
+	
