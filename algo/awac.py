@@ -1,5 +1,6 @@
 # source https://github.com/ikostrikov/jaxrl
 # https://arxiv.org/abs/2006.09359
+import os
 import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
@@ -22,6 +23,8 @@ from pydantic import BaseModel
 
 Params = flax.core.FrozenDict[str, Any]
 
+os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
+
 
 class AWACConfig(BaseModel):
     # GENERAL
@@ -29,22 +32,23 @@ class AWACConfig(BaseModel):
     project: str = "train-AWAC"
     env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = np.random.choice(1000000)
-    data_size: int = int(1e6)
     eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
+    # DATASET
+    data_size: int = int(1e6)
+    normalize_state: bool = False
     # NETWORK
     actor_hidden_dims: Tuple[int, int] = (256, 256, 256, 256)
     critic_hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
     critic_lr: float = 3e-4
     # AWAC SPECIFIC
-    beta: float = 1.0
+    beta: float = 2.0
     target_update_freq: int = 1
-    exp_adv_max: float = 100.0
     tau: float = 0.005
     discount: float = 0.99
 
@@ -167,12 +171,14 @@ def get_dataset(
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
 
     # normalize states
-    obs_mean = dataset.observations.mean(0)
-    obs_std = dataset.observations.std(0) + 1e-6
-    dataset = dataset._replace(
-        observations=(dataset.observations - obs_mean) / obs_std,
-        next_observations=(dataset.next_observations - obs_mean) / obs_std,
-    )
+    obs_mean, obs_std = 0, 1
+    if config.normalize_state:
+        obs_mean = dataset.observations.mean(0)
+        obs_std = dataset.observations.std(0)
+        dataset = dataset._replace(
+            observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
+            next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
+        )
     return dataset, obs_mean, obs_std
 
 
@@ -219,9 +225,8 @@ class AWACTrainer(NamedTuple):
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
-            weights = jnp.clip(
-                jnp.exp(adv / agent.config["beta"]), 0, agent.config["exp_adv_max"]
-            )
+            weights = jnp.exp(adv / agent.config["beta"])
+
             weights = jax.lax.stop_gradient(weights)
 
             log_prob = dist.log_prob(batch.actions)
@@ -326,7 +331,6 @@ def create_trainer(
             discount=config.discount,
             beta=config.beta,
             target_update_rate=config.tau,
-            exp_adv_max=config.exp_adv_max,
         )
     )  # make sure config is immutable
     return AWACTrainer(
@@ -382,7 +386,6 @@ if __name__ == "__main__":
             config.target_update_freq,
             config.n_updates,
         )
-        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
@@ -391,11 +394,12 @@ if __name__ == "__main__":
             policy_fn = partial(
                 agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
             )
-            normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
+            normalized_score = evaluate(
+                policy_fn, env, config.eval_episodes, obs_mean, obs_std
+            )
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
-        """
     end = time.time()
     policy_fn = partial(
         agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
