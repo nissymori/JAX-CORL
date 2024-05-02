@@ -25,7 +25,7 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |halfcheetah-medium-v2| $42.13\pm0.39$ |$43.78\pm0.39$   |$48.12\pm0.42$   |   
 |halfcheetah-medium-expert-v2| $61.83\pm 5.89$ | $89.05\pm4.11$ | $92.99\pm 0.11$  |   
 |hopper-medium-v2| $53.70\pm5.86$  | $46.51\pm4.56$  | $46.51\pm4.57$  |   
-|hopper-medium-expert-v2| $50.90\pm6.48$  | $52.73\pm52.80$  |$105.47\pm5.03$   |   
+|hopper-medium-expert-v2| $50.90\pm6.48$  | $52.73\pm7.80$  |$105.47\pm5.03$   |   
 |walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |   
 |walker2d-medium-expert-v2| $78.81\pm27.89$  | $109.08\pm0.25$  | $109.17\pm0.71$  |   
 
