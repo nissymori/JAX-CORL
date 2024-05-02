@@ -1,5 +1,6 @@
 # source https://github.com/ikostrikov/implicit_q_learning
 # https://arxiv.org/abs/2110.06169
+import os
 import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
@@ -22,6 +23,8 @@ from pydantic import BaseModel
 
 Params = flax.core.FrozenDict[str, Any]
 
+os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
+
 
 class IQLConfig(BaseModel):
     # GENERAL
@@ -29,21 +32,23 @@ class IQLConfig(BaseModel):
     project: str = "train-IQL"
     env_name: str = "hopper-medium-expert-v2"
     seed: int = 42
-    data_size: int = int(1e6)
     eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
+    # DATASET
+    data_size: int = int(1e6)
+    normalize_state: bool = False
     # TRAINING
     hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
     # IQL SPECIFIC
-    expectile: float = 0.7  # for Hopper 0.5
-    temperature: float = 3.0  # for Hopper 6.0
+    expectile: float = 0.7  # FYI: for Hopper-me, 0.5 produce better result from CORL
+    temperature: float = 3.0  # FYI: for Hopper-me, 6.0 produce better result from CORL
     tau: float = 0.005
     discount: float = 0.99
 
@@ -184,7 +189,17 @@ def get_dataset(
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
-    return dataset
+
+    # normalize states
+    obs_mean, obs_std = 0, 1
+    if config.normalize_state:
+        obs_mean = dataset.observations.mean(0)
+        obs_std = dataset.observations.std(0)
+        dataset = dataset._replace(
+            observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
+            next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
+        )
+    return dataset, obs_mean, obs_std
 
 
 def expectile_loss(diff, expectile=0.8) -> jnp.ndarray:

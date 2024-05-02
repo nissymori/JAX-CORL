@@ -1,3 +1,4 @@
+import os
 import time
 from functools import partial
 from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
@@ -19,6 +20,8 @@ from pydantic import BaseModel
 
 Params = flax.core.FrozenDict[str, Any]
 
+os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
+
 
 class TD3BCConfig(BaseModel):
     # GENERAL
@@ -26,13 +29,15 @@ class TD3BCConfig(BaseModel):
     project: str = "train-TD3-BC"
     env_name: str = "hopper-medium-expert-v2"
     seed: int = 42
-    data_size: int = int(1e6)
     eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_updates: int = 8
+    # DATASET
+    data_size: int = int(1e6)
+    normalize_state: bool = True
     # NETWORK
     hidden_dims: Sequence[int] = (256, 256)
     critic_lr: float = 1e-3
@@ -147,12 +152,13 @@ def get_dataset(
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
 
     # normalize states
-    obs_mean = dataset.observations.mean(0)
-    obs_std = dataset.observations.std(0) + 1e-6
-    dataset = dataset._replace(
-        observations=(dataset.observations - obs_mean) / obs_std,
-        next_observations=(dataset.next_observations - obs_mean) / obs_std,
-    )
+    if config.normalize_state:
+        obs_mean = dataset.observations.mean(0)
+        obs_std = dataset.observations.std(0)
+        dataset = dataset._replace(
+            observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
+            next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
+        )
     return dataset, obs_mean, obs_std
 
 
