@@ -37,7 +37,7 @@ class AWACConfig(BaseModel):
     eval_interval: int = 10000
     batch_size: int = 256
     max_steps: int = int(1e6)
-    n_updates: int = 8
+    n_jitted_updates: int = 8
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
@@ -264,9 +264,9 @@ class AWACTrainer(NamedTuple):
         dataset: Transition,
         rng: jax.random.PRNGKey,
         batch_size: int,
-        n_updates: int,
+        n_jitted_updates: int,
     ) -> Tuple["AWACTrainer", Dict]:
-        for _ in range(n_updates):
+        for _ in range(n_jitted_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             batch_indices = jax.random.randint(
                 batch_rng, (batch_size,), 0, len(dataset.observations)
@@ -373,7 +373,7 @@ if __name__ == "__main__":
         config,
     )
 
-    num_steps = config.max_steps // config.n_updates
+    num_steps = config.max_steps // config.n_jitted_updates
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
@@ -381,9 +381,8 @@ if __name__ == "__main__":
             dataset,
             subkey,
             config.batch_size,
-            config.n_updates,
+            config.n_jitted_updates,
         )
-        """
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
@@ -398,21 +397,3 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
-        """
-    end = time.time()
-    policy_fn = partial(
-        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
-    )
-    normalized_score = evaluate(
-        policy_fn,
-        env,
-        num_episodes=config.eval_episodes,
-        obs_mean=obs_mean,
-        obs_std=obs_std,
-    )
-    wandb.log(
-        {
-            f"{config.env_name}/final_normalized_score": normalized_score,
-            f"{config.env_name}/time": end - start,
-        }
-    )
