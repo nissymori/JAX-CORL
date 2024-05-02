@@ -55,7 +55,6 @@ conf_dict = OmegaConf.from_cli()
 config = TD3BCConfig(**conf_dict)
 
 
-
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
 
