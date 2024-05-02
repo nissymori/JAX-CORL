@@ -20,6 +20,7 @@ Training time is average training time for 1000_000 update steps with 1000_000 s
 ### Normalized Score
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
 We plan to extend the verification to other D4RL banchmarks such as AntMaze. We used the same hyperparameters as original implementations.
+Also, we plan to add comparison of performance with other implementations.
 |env|AWAC|IQL|TD3+BC|
 |---|---|---|---|
 |halfcheetah-medium-v2| $42.13\pm0.39$ |$43.78\pm0.39$   |$48.12\pm0.42$   |   
