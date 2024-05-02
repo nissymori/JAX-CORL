@@ -48,7 +48,6 @@ class AWACConfig(BaseModel):
     critic_lr: float = 3e-4
     # AWAC SPECIFIC
     beta: float = 2.0
-    target_update_freq: int = 1
     tau: float = 0.005
     discount: float = 0.99
 
@@ -264,8 +263,6 @@ class AWACTrainer(NamedTuple):
         agent,
         dataset: Transition,
         rng: jax.random.PRNGKey,
-        batch_size: int,
-        target_update_freq: int,
         n_updates: int,
     ) -> Tuple["AWACTrainer", Dict]:
         for _ in range(n_updates):
@@ -383,7 +380,6 @@ if __name__ == "__main__":
             dataset,
             subkey,
             config.batch_size,
-            config.target_update_freq,
             config.n_updates,
         )
         """
