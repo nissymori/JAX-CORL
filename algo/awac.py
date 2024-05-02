@@ -158,17 +158,14 @@ def get_dataset(
         dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
-
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))
-    # shuffle data and select the first data_size samples
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
-
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -328,7 +325,6 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-    config = flax.core.FrozenDict(config.dict())  # convert to flax FrozenDict
     return AWACTrainer(
         rng,
         critic=critic,

@@ -142,15 +142,14 @@ def get_dataset(
         dones_float=jnp.array(dones_float, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
     )
-    data_size = min(config.data_size, len(dataset.observations))
     # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
     dataset = jax.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
-
     # normalize states
     if config.normalize_state:
         obs_mean = dataset.observations.mean(0)
@@ -186,14 +185,13 @@ class TD3BCTrainer(NamedTuple):
     target_actor: TrainState
     target_critic: TrainState
     update_idx: jnp.int32
-    max_action: float = 1.0 
+    max_action: float = 1.0
     # hyperparameters
-    alpha: float = 2.5  
-    policy_noise_std: float = 0.2  
-    policy_noise_clip: float = 0.5  
-    tau: float = 0.005  
+    alpha: float = 2.5
+    policy_noise_std: float = 0.2
+    policy_noise_clip: float = 0.5
+    tau: float = 0.005
     discount: float = 0.99
-
 
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
