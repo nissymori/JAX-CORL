@@ -30,7 +30,7 @@ class IQLConfig(BaseModel):
     # GENERAL
     algo: str = "IQL"
     project: str = "train-IQL"
-    env_name: str = "hopper-medium-expert-v2"
+    env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = 42
     eval_episodes: int = 5
     log_interval: int = 100000
@@ -170,6 +170,7 @@ def get_dataset(
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
+        dones=jnp.array(dones, dtype=jnp.float32),
     )
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))
