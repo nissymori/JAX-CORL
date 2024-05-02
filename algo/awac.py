@@ -263,6 +263,7 @@ class AWACTrainer(NamedTuple):
         agent,
         dataset: Transition,
         rng: jax.random.PRNGKey,
+        batch_size: int,
         n_updates: int,
     ) -> Tuple["AWACTrainer", Dict]:
         for _ in range(n_updates):
