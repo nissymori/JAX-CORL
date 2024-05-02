@@ -395,7 +395,7 @@ if __name__ == "__main__":
 
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
-
+    # create agent
     example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
     agent: IQLTrainer = create_trainer(
         example_batch.observations,
