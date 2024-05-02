@@ -29,9 +29,6 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze.
 |walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |   
 |walker2d-medium-expert-v2| $78.81\pm27.89$  | $109.08\pm0.25$  | $109.17\pm0.71$  |   
 
-
-```
-
 # How to use this codebase for your own research
 
 The provided text explains how to use a specific codebase for research purposes, particularly in the context of D4RL datasets, but also allows for customization for other datasets. Here's a clarified version of the text:
@@ -40,6 +37,7 @@ This codebase can be used independently as a baseline for D4RL projects. It is a
 
 For researchers interested in using this code for their projects, we provide a detailed explanation of the code's shared structure:
 ##### Data structure
+
 ```py
 Transition(NamedTuple):
     observations: jnp.ndarray
