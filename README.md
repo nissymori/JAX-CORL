@@ -12,9 +12,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |[TD3-BC](https://arxiv.org/pdf/2106.06860)| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  ||  
 |[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|   
 |[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-| 
-
-
-
+The training time is the fastest w.r.t. the number of steps in a jitted epoch (`n_updates`). refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#training-speed-with-different-n_updates) for more details.
 
 # Reports with D4RL mujoco
 
