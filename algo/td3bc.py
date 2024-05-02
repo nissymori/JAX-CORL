@@ -5,6 +5,7 @@ from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
 import d4rl
+import distrax
 import flax
 import flax.linen as nn
 import gym
