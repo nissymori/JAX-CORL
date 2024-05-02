@@ -155,7 +155,7 @@ class Transition(NamedTuple):
 
 
 def get_dataset(
-    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config: IQLConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -296,7 +296,7 @@ class IQLTrainer(NamedTuple):
             agent, actor_loss = agent.update_actor(batch)
             agent, critic_loss = agent.update_critic(batch)
             new_target_critic = target_update(
-                agent.critic, agent.target_critic, agent.config["target_update_rate"]
+                agent.critic, agent.target_critic, agent.config["tau"]
             )
         return agent._replace(target_critic=new_target_critic), {}
 
@@ -355,15 +355,7 @@ def create_trainer(
         params=value_model.init(value_rng, observations),
         tx=optax.adam(learning_rate=config.value_lr),
     )
-    # create immutable config for IQL.
-    config = flax.core.FrozenDict(
-        dict(
-            discount=config.discount,
-            temperature=config.temperature,
-            expectile=config.expectile,
-            target_update_rate=config.tau,
-        )
-    )  # make sure config is immutable
+    config = flax.core.FrozenDict(config.dict())  # convert to flax FrozenDict
     return IQLTrainer(
         rng,
         critic=critic,
@@ -436,3 +428,4 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
+    wandb.finish()

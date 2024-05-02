@@ -55,6 +55,7 @@ conf_dict = OmegaConf.from_cli()
 config = TD3BCConfig(**conf_dict)
 
 
+
 def default_init(scale: Optional[float] = jnp.sqrt(2)):
     return nn.initializers.orthogonal(scale)
 
@@ -118,7 +119,7 @@ class Transition(NamedTuple):
 
 
 def get_dataset(
-    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config: TD3BCConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -290,7 +291,7 @@ class TD3BCTrainer(NamedTuple):
 
 
 def create_trainer(
-    observations: jnp.ndarray, actions: jnp.ndarray, config
+    observations: jnp.ndarray, actions: jnp.ndarray, config: TD3BCConfig
 ) -> TD3BCTrainer:
     rng = jax.random.PRNGKey(config.seed)
     critic_model = DoubleCritic(
@@ -327,17 +328,7 @@ def create_trainer(
         tx=optax.adam(config.actor_lr),
     )
 
-    config = flax.core.FrozenDict(
-        dict(
-            alpha=config.alpha,
-            policy_noise_std=config.policy_noise_std,
-            policy_noise_clip=config.policy_noise_clip,
-            discount=config.discount,
-            tau=config.tau,
-            batch_size=config.batch_size,
-            policy_freq=config.policy_freq,
-        )
-    )
+    config = flax.core.FrozenDict(config.dict())  # convert to flax FrozenDict
     return TD3BCTrainer(
         actor=actor_train_state,
         critic=critic_train_state,
@@ -404,3 +395,4 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
+    wandb.finish()

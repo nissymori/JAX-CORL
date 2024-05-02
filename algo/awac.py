@@ -134,7 +134,7 @@ class Transition(NamedTuple):
 
 
 def get_dataset(
-    env: gym.Env, config, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config: AWACConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -258,7 +258,7 @@ class AWACTrainer(NamedTuple):
         new_critic, critic_loss = update_by_loss_grad(agent.critic, get_critic_loss)
         return agent._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(3, 4, 5))
+    @partial(jax.jit, static_argnums=(3, 4))
     def update_n_times(
         agent,
         dataset: Transition,
@@ -324,13 +324,7 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-    config = flax.core.FrozenDict(
-        dict(
-            discount=config.discount,
-            beta=config.beta,
-            target_update_rate=config.tau,
-        )
-    )  # make sure config is immutable
+    config = flax.core.FrozenDict(config.dict())  # convert to flax FrozenDict
     return AWACTrainer(
         rng,
         critic=critic,
@@ -397,3 +391,4 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
+    wandb.finish()
