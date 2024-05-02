@@ -279,7 +279,10 @@ class AWACTrainer(NamedTuple):
                 agent.tau,
             )
             agent, actor_loss = agent.update_actor(batch, actor_rng)
-        return agent._replace(target_critic=new_target_critic), {}
+        return agent._replace(target_critic=new_target_critic), {
+            "critic_loss": critic_loss,
+            "actor_loss": actor_loss,
+        }
 
     @jax.jit
     def sample_actions(
@@ -287,11 +290,12 @@ class AWACTrainer(NamedTuple):
         observations: np.ndarray,
         seed: jax.random.PRNGKey,
         temperature: float = 1.0,
+        max_action: float = 1.0,  # In D4RL envs, the action space is [-1, 1]
     ) -> jnp.ndarray:
         actions = agent.actor.apply_fn(
             agent.actor.params, observations, temperature=temperature
         ).sample(seed=seed)
-        actions = jnp.clip(actions, -1.0, 1.0)
+        actions = jnp.clip(actions, -max_action, max_action)
         return actions
 
 

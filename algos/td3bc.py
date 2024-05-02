@@ -278,15 +278,19 @@ class TD3BCTrainer(NamedTuple):
                     target_critic=new_target_critic,
                     target_actor=new_target_actor,
                 )
-        return agent._replace(update_idx=agent.update_idx + 1), {}
+        return agent._replace(update_idx=agent.update_idx + 1), {
+            "critic_loss": critic_loss,
+            "actor_loss": actor_loss,
+        }
 
     @jax.jit
     def get_actions(
         agent,
         obs: jnp.ndarray,
+        max_action: float = 1.0,  # In D4RL, action is scaled to [-1, 1]
     ) -> jnp.ndarray:
         action = agent.actor.apply_fn(agent.actor.params, obs)
-        action = action.clip(-1.0, 1.0)
+        action = action.clip(-max_action, max_action)
         return action
 
 
