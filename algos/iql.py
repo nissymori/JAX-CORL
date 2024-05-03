@@ -3,8 +3,7 @@
 import os
 import time
 from functools import partial
-from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
-                    Union)
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
 import distrax
