@@ -7,18 +7,17 @@ from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
                     Union)
 
 import d4rl
-import gym
-import numpy as np
-import jax
-import jax.numpy as jnp
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
+import gym
+import jax
+import jax.numpy as jnp
+import numpy as np
 import optax
-import distrax
-
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
@@ -179,7 +178,7 @@ def get_dataset(
 
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
-) -> TrainState:
+) -> Tuple[TrainState, jnp.ndarray]:
     new_target_params = jax.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
     )
