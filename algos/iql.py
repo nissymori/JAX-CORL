@@ -20,8 +20,6 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
-Params = flax.core.FrozenDict[str, Any]
-
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
 
@@ -227,7 +225,9 @@ class IQLTrainer(NamedTuple):
     discount: float = 0.99
 
     def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
+        def critic_loss_fn(
+            critic_params: flax.core.FrozenDict[str, Any]
+        ) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.discount * (1 - batch.dones) * next_v
             q1, q2 = agent.critic.apply_fn(
@@ -240,7 +240,7 @@ class IQLTrainer(NamedTuple):
         return agent._replace(critic=new_critic), critic_loss
 
     def update_value(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def value_loss_fn(value_params: Params) -> jnp.ndarray:
+        def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             q1, q2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.observations, batch.actions
             )
@@ -253,7 +253,7 @@ class IQLTrainer(NamedTuple):
         return agent._replace(value=new_value), value_loss
 
     def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def actor_loss_fn(actor_params: Params) -> jnp.ndarray:
+        def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             v = agent.value.apply_fn(agent.value.params, batch.observations)
             q1, q2 = agent.critic.apply_fn(
                 agent.critic.params, batch.observations, batch.actions

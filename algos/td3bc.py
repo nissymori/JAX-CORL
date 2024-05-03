@@ -18,8 +18,6 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
-Params = flax.core.FrozenDict[str, Any]
-
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
 
@@ -194,7 +192,7 @@ class TD3BCTrainer(NamedTuple):
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["TD3BCTrainer", jnp.ndarray]:
-        def actor_loss_fn(actor_params: Params) -> jnp.ndarray:
+        def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             predicted_action = agent.actor.apply_fn(actor_params, batch.observations)
             critic_params = jax.lax.stop_gradient(agent.critic.params)
             q_value, _ = agent.critic.apply_fn(
@@ -214,7 +212,9 @@ class TD3BCTrainer(NamedTuple):
     def update_critic(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["TD3BCTrainer", jnp.ndarray]:
-        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
+        def critic_loss_fn(
+            critic_params: flax.core.FrozenDict[str, Any]
+        ) -> jnp.ndarray:
             q_pred_1, q_pred_2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )

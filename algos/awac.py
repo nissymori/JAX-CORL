@@ -20,8 +20,6 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
-Params = flax.core.FrozenDict[str, Any]
-
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
 
@@ -206,7 +204,7 @@ class AWACTrainer(NamedTuple):
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["AWACTrainer", jnp.ndarray]:
-        def get_actor_loss(actor_params: Params) -> jnp.ndarray:
+        def get_actor_loss(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             dist = agent.actor.apply_fn(actor_params, batch.observations)
             pi_actions = dist.sample(seed=rng)
             q_1, q_2 = agent.critic.apply_fn(
@@ -235,7 +233,9 @@ class AWACTrainer(NamedTuple):
     def update_critic(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["AWACTrainer", jnp.ndarray]:
-        def get_critic_loss(critic_params: Params) -> jnp.ndarray:
+        def get_critic_loss(
+            critic_params: flax.core.FrozenDict[str, Any]
+        ) -> jnp.ndarray:
             dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
             next_actions = dist.sample(seed=rng)
             n_q_1, n_q_2 = agent.target_critic.apply_fn(
