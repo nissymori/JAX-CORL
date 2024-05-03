@@ -2,14 +2,14 @@
 
 
 format:
-	black algo
-	blackdoc algo
-	isort algo
+	black algos
+	blackdoc algos
+	isort algos
 
 check:
-	black algo --check --diff
-	blackdoc algo --check
-	flake8 --config pyproject.toml --ignore E203,E501,W503,E741 algo
-	mypy --config pyproject.toml algo
-	isort algo --check --diff
+	black algos --check --diff
+	blackdoc algos --check
+	flake8 --config pyproject.toml --ignore E203,E501,W503,E741 algos
+	mypy --config pyproject.toml algos
+	isort algos --check --diff
 	

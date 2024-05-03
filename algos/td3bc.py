@@ -1,26 +1,22 @@
 import os
 import time
 from functools import partial
-from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
-                    Union)
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
-import gym
-import numpy as np
-import jax
-import jax.numpy as jnp
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
+import gym
+import jax
+import jax.numpy as jnp
+import numpy as np
 import optax
-import distrax
-
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-
-Params = flax.core.FrozenDict[str, Any]
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
@@ -196,7 +192,7 @@ class TD3BCTrainer(NamedTuple):
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["TD3BCTrainer", jnp.ndarray]:
-        def actor_loss_fn(actor_params: Params) -> jnp.ndarray:
+        def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             predicted_action = agent.actor.apply_fn(actor_params, batch.observations)
             critic_params = jax.lax.stop_gradient(agent.critic.params)
             q_value, _ = agent.critic.apply_fn(
@@ -216,7 +212,9 @@ class TD3BCTrainer(NamedTuple):
     def update_critic(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["TD3BCTrainer", jnp.ndarray]:
-        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
+        def critic_loss_fn(
+            critic_params: flax.core.FrozenDict[str, Any]
+        ) -> jnp.ndarray:
             q_pred_1, q_pred_2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -307,7 +305,6 @@ def create_trainer(
         hidden_dims=config.hidden_dims,
     )
     rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-
     # initialize critic
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
@@ -319,7 +316,6 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
-
     # initialize actor
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,

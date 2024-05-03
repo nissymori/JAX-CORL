@@ -3,26 +3,22 @@
 import os
 import time
 from functools import partial
-from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
-                    Union)
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
-import gym
-import numpy as np
-import jax
-import jax.numpy as jnp
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
+import gym
+import jax
+import jax.numpy as jnp
+import numpy as np
 import optax
-import distrax
-
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-
-Params = flax.core.FrozenDict[str, Any]
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
@@ -179,7 +175,7 @@ def get_dataset(
 
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
-) -> TrainState:
+) -> Tuple[TrainState, jnp.ndarray]:
     new_target_params = jax.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
     )
@@ -208,7 +204,7 @@ class AWACTrainer(NamedTuple):
     def update_actor(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["AWACTrainer", jnp.ndarray]:
-        def get_actor_loss(actor_params: Params) -> jnp.ndarray:
+        def get_actor_loss(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             dist = agent.actor.apply_fn(actor_params, batch.observations)
             pi_actions = dist.sample(seed=rng)
             q_1, q_2 = agent.critic.apply_fn(
@@ -237,7 +233,9 @@ class AWACTrainer(NamedTuple):
     def update_critic(
         agent, batch: Transition, rng: jax.random.PRNGKey
     ) -> Tuple["AWACTrainer", jnp.ndarray]:
-        def get_critic_loss(critic_params: Params) -> jnp.ndarray:
+        def get_critic_loss(
+            critic_params: flax.core.FrozenDict[str, Any]
+        ) -> jnp.ndarray:
             dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
             next_actions = dist.sample(seed=rng)
             n_q_1, n_q_2 = agent.target_critic.apply_fn(

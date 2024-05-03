@@ -3,26 +3,22 @@
 import os
 import time
 from functools import partial
-from typing import (Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple,
-                    Union)
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
-import gym
-import numpy as np
-import jax
-import jax.numpy as jnp
+import distrax
 import flax
 import flax.linen as nn
-from flax.training.train_state import TrainState
+import gym
+import jax
+import jax.numpy as jnp
+import numpy as np
 import optax
-import distrax
-
 import tqdm
 import wandb
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-
-Params = flax.core.FrozenDict[str, Any]
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
@@ -89,9 +85,6 @@ class Critic(nn.Module):
 
 
 def ensemblize(cls, num_qs, out_axes=0, **kwargs):
-    """
-    Ensemblize a module by creating `num_qs` instances of the module
-    """
     split_rngs = kwargs.pop("split_rngs", {})
     return nn.vmap(
         cls,
@@ -209,7 +202,7 @@ def target_update(
 
 def update_by_loss_grad(
     train_state: TrainState, loss_fn: Callable
-) -> Tuple[float, Params]:
+) -> Tuple[TrainState, jnp.ndarray]:
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grad = grad_fn(train_state.params)
     new_train_state = train_state.apply_gradients(grads=grad)
@@ -229,7 +222,9 @@ class IQLTrainer(NamedTuple):
     discount: float = 0.99
 
     def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def critic_loss_fn(critic_params: Params) -> jnp.ndarray:
+        def critic_loss_fn(
+            critic_params: flax.core.FrozenDict[str, Any]
+        ) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
             target_q = batch.rewards + agent.discount * (1 - batch.dones) * next_v
             q1, q2 = agent.critic.apply_fn(
@@ -242,7 +237,7 @@ class IQLTrainer(NamedTuple):
         return agent._replace(critic=new_critic), critic_loss
 
     def update_value(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def value_loss_fn(value_params: Params) -> jnp.ndarray:
+        def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             q1, q2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.observations, batch.actions
             )
@@ -255,7 +250,7 @@ class IQLTrainer(NamedTuple):
         return agent._replace(value=new_value), value_loss
 
     def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
-        def actor_loss_fn(actor_params: Params) -> jnp.ndarray:
+        def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             v = agent.value.apply_fn(agent.value.params, batch.observations)
             q1, q2 = agent.critic.apply_fn(
                 agent.critic.params, batch.observations, batch.actions
@@ -330,7 +325,6 @@ def create_trainer(
     )
     schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
     actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
-
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_model.init(actor_rng, observations),
