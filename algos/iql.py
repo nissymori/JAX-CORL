@@ -85,9 +85,6 @@ class Critic(nn.Module):
 
 
 def ensemblize(cls, num_qs, out_axes=0, **kwargs):
-    """
-    Ensemblize a module by creating `num_qs` instances of the module
-    """
     split_rngs = kwargs.pop("split_rngs", {})
     return nn.vmap(
         cls,
@@ -328,7 +325,6 @@ def create_trainer(
     )
     schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
     actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
-
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_model.init(actor_rng, observations),

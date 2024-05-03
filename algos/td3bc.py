@@ -305,7 +305,6 @@ def create_trainer(
         hidden_dims=config.hidden_dims,
     )
     rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-
     # initialize critic
     critic_train_state: TrainState = TrainState.create(
         apply_fn=critic_model.apply,
@@ -317,7 +316,6 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(config.critic_lr),
     )
-
     # initialize actor
     actor_train_state: TrainState = TrainState.create(
         apply_fn=actor_model.apply,
