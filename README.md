@@ -49,7 +49,7 @@ def get_dataset(...) -> Transition:
     ...
     return dataset
 ```
-The code includes a Transition class, defined as a NamedTuple, which includes fields for observations, actions, rewards, next observations, and done flags. The get_dataset function is expected to output data in the Transition format, making it adaptable to any dataset that conforms to this structure.
+The code includes a `Transition` class, defined as a `NamedTuple`, which includes fields for observations, actions, rewards, next observations, and done flags. The get_dataset function is expected to output data in the Transition format, making it adaptable to any dataset that conforms to this structure.
 
 ##### Trainer class
 ```py
