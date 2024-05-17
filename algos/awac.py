@@ -48,6 +48,11 @@ class AWACConfig(BaseModel):
     tau: float = 0.005
     discount: float = 0.99
 
+    def __hash__(
+        self,
+    ):  # make config hashable to be specified as static_argnums in jax.jit.
+        return hash(self.__repr__())
+
 
 conf_dict = OmegaConf.from_cli()
 config = AWACConfig(**conf_dict)
@@ -184,7 +189,7 @@ def target_update(
 
 def update_by_loss_grad(
     train_state: TrainState, loss_fn: Callable
-) -> Tuple[float, Params]:
+) -> Tuple[float, Any]:
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grad = grad_fn(train_state.params)
     new_train_state = train_state.apply_gradients(grads=grad)
@@ -196,13 +201,9 @@ class AWACTrainer(NamedTuple):
     critic: TrainState
     target_critic: TrainState
     actor: TrainState
-    # hyperparameters
-    beta: float = 2.0
-    tau: float = 0.005
-    discount: float = 0.99
 
     def update_actor(
-        agent, batch: Transition, rng: jax.random.PRNGKey
+        agent, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
     ) -> Tuple["AWACTrainer", jnp.ndarray]:
         def get_actor_loss(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             dist = agent.actor.apply_fn(actor_params, batch.observations)
@@ -219,7 +220,7 @@ class AWACTrainer(NamedTuple):
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
-            weights = jnp.exp(adv / agent.beta)
+            weights = jnp.exp(adv / config.beta)
 
             weights = jax.lax.stop_gradient(weights)
 
@@ -231,7 +232,7 @@ class AWACTrainer(NamedTuple):
         return agent._replace(actor=new_actor), actor_loss
 
     def update_critic(
-        agent, batch: Transition, rng: jax.random.PRNGKey
+        agent, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
     ) -> Tuple["AWACTrainer", jnp.ndarray]:
         def get_critic_loss(
             critic_params: flax.core.FrozenDict[str, Any]
@@ -242,7 +243,7 @@ class AWACTrainer(NamedTuple):
                 agent.target_critic.params, batch.next_observations, next_actions
             )
             next_q = jnp.minimum(n_q_1, n_q_2)
-            q_target = batch.rewards + agent.discount * (1 - batch.dones) * next_q
+            q_target = batch.rewards + config.discount * (1 - batch.dones) * next_q
             q_target = jax.lax.stop_gradient(q_target)
 
             q_1, q_2 = agent.critic.apply_fn(
@@ -255,28 +256,27 @@ class AWACTrainer(NamedTuple):
         new_critic, critic_loss = update_by_loss_grad(agent.critic, get_critic_loss)
         return agent._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(3, 4))
+    @partial(jax.jit, static_argnums=(3,))
     def update_n_times(
         agent,
         dataset: Transition,
         rng: jax.random.PRNGKey,
-        batch_size: int,
-        n_jitted_updates: int,
+        config: AWACConfig,
     ) -> Tuple["AWACTrainer", Dict]:
-        for _ in range(n_jitted_updates):
+        for _ in range(config.n_jitted_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             batch_indices = jax.random.randint(
-                batch_rng, (batch_size,), 0, len(dataset.observations)
+                batch_rng, (config.batch_size,), 0, len(dataset.observations)
             )
             batch = jax.tree_map(lambda x: x[batch_indices], dataset)
 
-            agent, critic_loss = agent.update_critic(batch, critic_rng)
+            agent, critic_loss = agent.update_critic(batch, critic_rng, config)
             new_target_critic = target_update(
                 agent.critic,
                 agent.target_critic,
-                agent.tau,
+                config.tau,
             )
-            agent, actor_loss = agent.update_actor(batch, actor_rng)
+            agent, actor_loss = agent.update_actor(batch, actor_rng, config)
         return agent._replace(target_critic=new_target_critic), {
             "critic_loss": critic_loss,
             "actor_loss": actor_loss,
@@ -331,9 +331,6 @@ def create_trainer(
         critic=critic,
         target_critic=target_critic,
         actor=actor,
-        beta=config.beta,
-        tau=config.tau,
-        discount=config.discount,
     )
 
 
@@ -377,8 +374,7 @@ if __name__ == "__main__":
         agent, update_info = agent.update_n_times(
             dataset,
             subkey,
-            config.batch_size,
-            config.n_jitted_updates,
+            config,
         )
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}

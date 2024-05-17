@@ -49,6 +49,11 @@ class IQLConfig(BaseModel):
     tau: float = 0.005
     discount: float = 0.99
 
+    def __hash__(
+        self,
+    ):  # make config hashable to be specified as static_argnums in jax.jit.
+        return hash(self.__repr__())
+
 
 conf_dict = OmegaConf.from_cli()
 config = IQLConfig(**conf_dict)
@@ -215,18 +220,15 @@ class IQLTrainer(NamedTuple):
     target_critic: TrainState
     value: TrainState
     actor: TrainState
-    # hyperparameters
-    expectile: float = 0.7
-    temperature: float = 3.0
-    tau: float = 0.005
-    discount: float = 0.99
 
-    def update_critic(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
+    def update_critic(
+        agent, batch: Transition, config: IQLConfig
+    ) -> Tuple["IQLTrainer", Dict]:
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
             next_v = agent.value.apply_fn(agent.value.params, batch.next_observations)
-            target_q = batch.rewards + agent.discount * (1 - batch.dones) * next_v
+            target_q = batch.rewards + config.discount * (1 - batch.dones) * next_v
             q1, q2 = agent.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -236,27 +238,31 @@ class IQLTrainer(NamedTuple):
         new_critic, critic_loss = update_by_loss_grad(agent.critic, critic_loss_fn)
         return agent._replace(critic=new_critic), critic_loss
 
-    def update_value(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
+    def update_value(
+        agent, batch: Transition, config: IQLConfig
+    ) -> Tuple["IQLTrainer", Dict]:
         def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             q1, q2 = agent.target_critic.apply_fn(
                 agent.target_critic.params, batch.observations, batch.actions
             )
             q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
             v = agent.value.apply_fn(value_params, batch.observations)
-            value_loss = expectile_loss(q - v, agent.expectile).mean()
+            value_loss = expectile_loss(q - v, config.expectile).mean()
             return value_loss
 
         new_value, value_loss = update_by_loss_grad(agent.value, value_loss_fn)
         return agent._replace(value=new_value), value_loss
 
-    def update_actor(agent, batch: Transition) -> Tuple["IQLTrainer", Dict]:
+    def update_actor(
+        agent, batch: Transition, config: IQLConfig
+    ) -> Tuple["IQLTrainer", Dict]:
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             v = agent.value.apply_fn(agent.value.params, batch.observations)
             q1, q2 = agent.critic.apply_fn(
                 agent.critic.params, batch.observations, batch.actions
             )
             q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * agent.temperature)
+            exp_a = jnp.exp((q - v) * config.temperature)
             exp_a = jnp.minimum(exp_a, 100.0)
 
             dist = agent.actor.apply_fn(actor_params, batch.observations)
@@ -267,26 +273,25 @@ class IQLTrainer(NamedTuple):
         new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
         return agent._replace(actor=new_actor), actor_loss
 
-    @partial(jax.jit, static_argnums=(3, 4))
+    @partial(jax.jit, static_argnums=(3,))
     def update_n_times(
         agent,
         dataset: Transition,
         rng: jax.random.PRNGKey,
-        batch_size: int,
-        n_jitted_updates: int,
+        config: IQLConfig,
     ) -> Tuple["IQLTrainer", Dict]:
-        for _ in range(n_jitted_updates):
+        for _ in range(config.n_jitted_updates):
             rng, subkey = jax.random.split(rng)
             batch_indices = jax.random.randint(
-                subkey, (batch_size,), 0, len(dataset.observations)
+                subkey, (config.batch_size,), 0, len(dataset.observations)
             )
             batch = jax.tree_map(lambda x: x[batch_indices], dataset)
 
-            agent, value_loss = agent.update_value(batch)
-            agent, actor_loss = agent.update_actor(batch)
-            agent, critic_loss = agent.update_critic(batch)
+            agent, value_loss = agent.update_value(batch, config)
+            agent, actor_loss = agent.update_actor(batch, config)
+            agent, critic_loss = agent.update_critic(batch, config)
             new_target_critic = target_update(
-                agent.critic, agent.target_critic, agent.tau
+                agent.critic, agent.target_critic, config.tau
             )
         return agent._replace(target_critic=new_target_critic), {
             "value_loss": value_loss,
@@ -355,10 +360,6 @@ def create_trainer(
         target_critic=target_critic,
         value=value,
         actor=actor,
-        expectile=config.expectile,
-        temperature=config.temperature,
-        tau=config.tau,
-        discount=config.discount,
     )
 
 
@@ -410,9 +411,7 @@ if __name__ == "__main__":
     num_steps = config.max_steps // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        agent, update_info = agent.update_n_times(
-            dataset, subkey, config.batch_size, config.n_jitted_updates
-        )
+        agent, update_info = agent.update_n_times(dataset, subkey, config)
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
