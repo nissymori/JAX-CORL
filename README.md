@@ -12,7 +12,6 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |524.4s (~9m)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
 |[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|-|
 |[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-|-|
-|[TD7](https://arxiv.org/abs/2306.02451)| 🚧  |-|-|
 
 Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
