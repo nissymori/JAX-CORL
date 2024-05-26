@@ -110,7 +110,7 @@ For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) whi
 - This project is inspired by [CORL](https://github.com/tinkoff-ai/CORL), a clean single-file implementations of offline RL algorithm in pytorch.
 - I would like to thank [@JohannesAck](https://github.com/johannesack) for his TD3-BC codebase and helpful advices.
 - The IQL implementation is based on [implicit_q_learning](https://github.com/ikostrikov/implicit_q_learning).
-- AWAC implementation is based on [jaxrl](https://github.com/ikostrikov/jaxrl) and [CORL](https://github.com/tinkoff-ai/CORL).
+- AWAC implementation is based on [jaxrl](https://github.com/ikostrikov/jaxrl).
 - CQL implementation is based on [JaxCQL](https://github.com/young-geng/JaxCQL).
 - DT implementation is based on [min-decision-transformer](https://github.com/nikhilbarhate99/min-decision-transformer).
 
