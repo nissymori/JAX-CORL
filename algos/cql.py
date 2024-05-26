@@ -190,7 +190,9 @@ class FullyConnectedQFunction(nn.Module):
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         x = jnp.concatenate([observations, actions], axis=-1)
         x = FullyConnectedNetwork(
-            output_dim=1, hidden_dims=self.hidden_dims, orthogonal_init=self.orthogonal_init
+            output_dim=1,
+            hidden_dims=self.hidden_dims,
+            orthogonal_init=self.orthogonal_init,
         )(x)
         return jnp.squeeze(x, -1)
 
