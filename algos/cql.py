@@ -34,7 +34,7 @@ class CQLConfig(BaseModel):
     eval_interval: int = 10000
     eval_episodes: int = 5
     # NETWORK
-    hidden_dims: List[int] = [256, 256]
+    hidden_dims: Tuple[int] = (256, 256)
     orthogonal_init: bool = False
     policy_log_std_multiplier: float = 1.0
     policy_log_std_offset: float = -1.0
@@ -145,7 +145,7 @@ class Scalar(nn.Module):
 
 class FullyConnectedNetwork(nn.Module):
     output_dim: int
-    hidden_dims: List[int] = [256, 256]
+    hidden_dims: Tuple[int] = (256, 256)
     orthogonal_init: bool = False
 
     @nn.compact
@@ -182,7 +182,7 @@ class FullyConnectedNetwork(nn.Module):
 class FullyConnectedQFunction(nn.Module):
     observation_dim: int
     action_dim: int
-    hidden_dims: List[int] = [256, 256]
+    hidden_dims: Tuple[int] = (256, 256)
     orthogonal_init: bool = False
 
     @nn.compact
@@ -190,9 +190,7 @@ class FullyConnectedQFunction(nn.Module):
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         x = jnp.concatenate([observations, actions], axis=-1)
         x = FullyConnectedNetwork(
-            output_dim=1,
-            hidden_dims=self.hidden_dims,
-            orthogonal_init=self.orthogonal_init,
+            output_dim=1, hidden_dims=self.hidden_dims, orthogonal_init=self.orthogonal_init
         )(x)
         return jnp.squeeze(x, -1)
 
@@ -200,7 +198,7 @@ class FullyConnectedQFunction(nn.Module):
 class TanhGaussianPolicy(nn.Module):
     observation_dim: int
     action_dim: int
-    hidden_dims: List[int] = [256, 256]
+    hidden_dims: Tuple[int] = (256, 256)
     orthogonal_init: bool = False
     log_std_multiplier: float = 1.0
     log_std_offset: float = -1.0
