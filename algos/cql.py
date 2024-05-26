@@ -1,4 +1,3 @@
-import os
 import time
 from copy import copy, deepcopy
 from functools import partial
@@ -22,28 +21,26 @@ from tqdm import tqdm
 
 
 class CQLConfig(BaseModel):
+    # GENERAL
     project: str = "cql-jax"
     env: str = "halfcheetah-medium-expert-v2"
     max_traj_length: int = 1000
     seed: int = 42
-    save_model: bool = False
     batch_size: int = 256
     n_jitted_updates: int = 8
-
     reward_scale: float = 1.0
     reward_bias: float = 0.0
     clip_action: float = 0.999
-
+    max_steps: int = 1000000
+    eval_interval: int = 10000
+    eval_episodes: int = 5
+    # NETWORK
     policy_arch: str = "256-256"
     qf_arch: str = "256-256"
     orthogonal_init: bool = False
     policy_log_std_multiplier: float = 1.0
     policy_log_std_offset: float = -1.0
-
-    total_steps: int = 1000000
-    eval_period: int = 10000
-    eval_n_trajs: int = 5
-    # CQL specific
+    # CQL SPECIFIC
     discount: float = 0.99
     alpha_multiplier: float = 1.0
     use_automatic_entropy_tuning: bool = True
@@ -760,7 +757,7 @@ if __name__ == "__main__":
     sac = CQLTrainer(config, policy, qf, subrng)
     train_states, target_qf_params = sac._train_states, sac._target_qf_params
 
-    num_steps = int(config.total_steps // config.n_jitted_updates)
+    num_steps = int(config.max_steps // config.n_jitted_updates)
     for step in tqdm(range(num_steps)):
         metrics = {"step": step}
 
@@ -770,11 +767,11 @@ if __name__ == "__main__":
         )
         metrics.update(mlxu.prefix_metrics(metrics, "sac"))
 
-        if step == 0 or (step + 1) % config.eval_period == 0:
+        if step == 0 or (step + 1) % config.eval_interval == 0:
             rng, subrng = jax.random.split(rng)
             policy_fn = partial(sac.get_actions, train_states=train_states)
             normalized_score = evaluate(
-                policy_fn, env, config.eval_n_trajs, obs_mean=0, obs_std=1
+                policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
             )
 
             metrics[f"{config.env}/normalized_score"] = normalized_score
@@ -785,7 +782,8 @@ if __name__ == "__main__":
     rng, subrng = jax.random.split(rng)
     policy_fn = partial(sac.get_actions, train_states=train_states)
     normalized_score = evaluate(
-        policy_fn, env, config.eval_n_trajs, obs_mean=0, obs_std=1
+        policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
     )
     wandb.log({f"{config.env}/finel_normalized_score": normalized_score})
     print(config.env, step, normalized_score)
+    wandb.finish()
