@@ -10,7 +10,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |[AWAC](https://arxiv.org/abs/2006.09359)| [algo/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/awac.py) |665.5s(~11m)| [link](https://api.wandb.ai/links/nissymori/2i66gkvj) |
 |[IQL](https://arxiv.org/abs/2110.06169)|  [algo/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/iql.py)   |516.5s (~9m)| [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algo/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/td3bc.py)  |524.4s (~9m)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
-|[CQL](https://arxiv.org/abs/2006.04779)| 🚧   |-|-|
+|[CQL](https://arxiv.org/abs/2006.04779)| [algo/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algo/cql.py)   |-|-|
 |[DT](https://arxiv.org/abs/2106.01345) | 🚧  |-|-|
 
 Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
