@@ -34,8 +34,7 @@ class CQLConfig(BaseModel):
     eval_interval: int = 10000
     eval_episodes: int = 5
     # NETWORK
-    policy_arch: str = "256-256"
-    qf_arch: str = "256-256"
+    hidden_dims: List[int] = [256, 256]
     orthogonal_init: bool = False
     policy_log_std_multiplier: float = 1.0
     policy_log_std_offset: float = -1.0
@@ -146,14 +145,13 @@ class Scalar(nn.Module):
 
 class FullyConnectedNetwork(nn.Module):
     output_dim: int
-    arch: str = "256-256"
+    hidden_dims: List[int] = [256, 256]
     orthogonal_init: bool = False
 
     @nn.compact
     def __call__(self, input_tensor: jnp.ndarray) -> jnp.ndarray:
         x = input_tensor
-        hidden_sizes = [int(h) for h in self.arch.split("-")]
-        for h in hidden_sizes:
+        for h in hidden_dims:
             if self.orthogonal_init:
                 x = nn.Dense(
                     h,
@@ -184,7 +182,7 @@ class FullyConnectedNetwork(nn.Module):
 class FullyConnectedQFunction(nn.Module):
     observation_dim: int
     action_dim: int
-    arch: str = "256-256"
+    hidden_dims: List[int] = [256, 256]
     orthogonal_init: bool = False
 
     @nn.compact
@@ -192,7 +190,7 @@ class FullyConnectedQFunction(nn.Module):
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         x = jnp.concatenate([observations, actions], axis=-1)
         x = FullyConnectedNetwork(
-            output_dim=1, arch=self.arch, orthogonal_init=self.orthogonal_init
+            output_dim=1, hidden_dims=self.hidden_dims, orthogonal_init=self.orthogonal_init
         )(x)
         return jnp.squeeze(x, -1)
 
@@ -200,7 +198,7 @@ class FullyConnectedQFunction(nn.Module):
 class TanhGaussianPolicy(nn.Module):
     observation_dim: int
     action_dim: int
-    arch: str = "256-256"
+    hidden_dims: List[int] = [256, 256]
     orthogonal_init: bool = False
     log_std_multiplier: float = 1.0
     log_std_offset: float = -1.0
@@ -208,7 +206,7 @@ class TanhGaussianPolicy(nn.Module):
     def setup(self) -> None:
         self.base_network = FullyConnectedNetwork(
             output_dim=2 * self.action_dim,
-            arch=self.arch,
+            hidden_dims=self.hidden_dims,
             orthogonal_init=self.orthogonal_init,
         )
         self.log_std_multiplier_module = Scalar(self.log_std_multiplier)
@@ -740,13 +738,13 @@ if __name__ == "__main__":
     policy = TanhGaussianPolicy(
         observation_dim,
         action_dim,
-        config.policy_arch,
+        config.hidden_dims,
         config.orthogonal_init,
         config.policy_log_std_multiplier,
         config.policy_log_std_offset,
     )
     qf = FullyConnectedQFunction(
-        observation_dim, action_dim, config.qf_arch, config.orthogonal_init
+        observation_dim, action_dim, config.hidden_dims, config.orthogonal_init
     )
 
     if config.target_entropy >= 0.0:
