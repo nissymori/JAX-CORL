@@ -11,7 +11,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 |[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m)| [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
 |[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |-|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
-|[DT](https://arxiv.org/abs/2106.01345) | [algos/dt.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/dt.py)   |-|-|
+|[DT](https://arxiv.org/abs/2106.01345) |🚧|-|-|
 
 Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
@@ -21,14 +21,14 @@ Training time is average training time for 1000_000 update steps with 1000_000 s
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
 We plan to extend the verification to other D4RL banchmarks such as AntMaze. We used the same hyperparameters as original implementations.
 Also, we plan to add comparison of performance with other implementations.
-|env|AWAC|IQL|TD3+BC|CQL|DT|
-|---|---|---|---|---|---|
-|halfcheetah-medium-v2| $42.13\pm0.39$ |$43.78\pm0.39$   |$48.12\pm0.42$   |-|-|   
-|halfcheetah-medium-expert-v2| $61.83\pm 5.89$ | $89.05\pm4.11$ | $92.99\pm 0.11$  |-|-|   
-|hopper-medium-v2| $53.70\pm5.86$  | $46.51\pm4.56$  | $46.51\pm4.57$  |-|-|   
-|hopper-medium-expert-v2| $50.90\pm6.48$  | $52.73\pm7.80$  |$105.47\pm5.03$   |-|-|   
-|walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |-|-|   
-|walker2d-medium-expert-v2| $78.81\pm27.89$  | $109.08\pm0.25$  | $109.17\pm0.71$  |-|-|   
+|env|AWAC|IQL|TD3+BC|CQL|
+|---|---|---|---|---|
+|halfcheetah-medium-v2| $42.13\pm0.39$ |$43.78\pm0.39$   |$48.12\pm0.42$   |-|
+|halfcheetah-medium-expert-v2| $61.83\pm 5.89$ | $89.05\pm4.11$ | $92.99\pm 0.11$  |-| 
+|hopper-medium-v2| $53.70\pm5.86$  | $46.51\pm4.56$  | $46.51\pm4.57$  |-|
+|hopper-medium-expert-v2| $50.90\pm6.48$  | $52.73\pm7.80$  |$105.47\pm5.03$   |-|
+|walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |-|
+|walker2d-medium-expert-v2| $78.81\pm27.89$  | $109.08\pm0.25$  | $109.17\pm0.71$  |-|
 
 # How to use this codebase for your own research
 This codebase can be used independently as a baseline for D4RL projects. It is also designed to be flexible, allowing users to develop new algorithms or adapt it for datasets other than D4RL.
