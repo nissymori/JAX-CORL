@@ -777,8 +777,8 @@ if __name__ == "__main__":
                 policy_fn, env, config.eval_n_trajs, obs_mean=0, obs_std=1
             )
 
-            metrics[f"{config.env}/average_normalized_return"] = normalized_score
-            print(config.env, step, metrics[f"{config.env}/average_normalized_return"])
+            metrics[f"{config.env}/normalized_score"] = normalized_score
+            print(config.env, step, metrics[f"{config.env}/normalized_score"])
         wandb.log(metrics)
 
     # final evaluation
@@ -787,5 +787,5 @@ if __name__ == "__main__":
     normalized_score = evaluate(
         policy_fn, env, config.eval_n_trajs, obs_mean=0, obs_std=1
     )
-    wandb.log({f"{config.env}/finel_average_normalized_return": normalized_score})
+    wandb.log({f"{config.env}/finel_normalized_score": normalized_score})
     print(config.env, step, normalized_score)
