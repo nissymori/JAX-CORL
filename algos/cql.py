@@ -9,7 +9,6 @@ import flax
 import gym
 import jax
 import jax.numpy as jnp
-import mlxu
 import numpy as np
 import optax
 import wandb
@@ -765,7 +764,7 @@ if __name__ == "__main__":
         train_states, target_qf_params, metrics = sac.train(
             train_states, target_qf_params, dataset, update_rng, config, bc=False
         )
-        metrics.update(mlxu.prefix_metrics(metrics, "sac"))
+        metrics.update(metrics)
 
         if step == 0 or (step + 1) % config.eval_interval == 0:
             rng, subrng = jax.random.split(rng)
