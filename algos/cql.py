@@ -151,7 +151,7 @@ class FullyConnectedNetwork(nn.Module):
     @nn.compact
     def __call__(self, input_tensor: jnp.ndarray) -> jnp.ndarray:
         x = input_tensor
-        for h in hidden_dims:
+        for h in self.hidden_dims:
             if self.orthogonal_init:
                 x = nn.Dense(
                     h,
