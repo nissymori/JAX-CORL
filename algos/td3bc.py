@@ -388,4 +388,15 @@ if __name__ == "__main__":
             print(i, normalized_score)
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
+    # final evaluation
+    policy_fn = agent.get_actions
+    normalized_score = evaluate(
+        policy_fn,
+        env,
+        num_episodes=config.eval_episodes,
+        obs_mean=obs_mean,
+        obs_std=obs_std,
+    )
+    print("Final Evaluation Score:", normalized_score)
+    wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
     wandb.finish()
