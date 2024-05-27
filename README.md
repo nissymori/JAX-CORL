@@ -7,7 +7,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 # Algorithms
 |Algorithm|implementation|training time| wandb |
 |---|---|---|---|
-|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |665.5s(~11m)| [link](https://api.wandb.ai/links/nissymori/2i66gkvj) |
+|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |665.5s(~11m)| [link](https://api.wandb.ai/links/nissymori/mwi235j6) |
 |[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m)| [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
 |[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |-|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
@@ -23,11 +23,11 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze. We 
 Also, we plan to add comparison of performance with other implementations.
 |env|AWAC|IQL|TD3+BC|CQL|
 |---|---|---|---|---|
-|halfcheetah-medium-v2| $42.13\pm0.39$ |$43.78\pm0.39$   |$48.12\pm0.42$   |-|
+|halfcheetah-medium-v2| $42.13\pm0.39$ |$43.78\pm0.39$   |$48.12\pm0.42$   |$48.65\pm 0.49$|
 |halfcheetah-medium-expert-v2| $61.83\pm 5.89$ | $89.05\pm4.11$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$| 
-|hopper-medium-v2| $53.70\pm5.86$  | $46.51\pm4.56$  | $46.51\pm4.57$  |-|
+|hopper-medium-v2| $53.70\pm5.86$  | $46.51\pm4.56$  | $46.51\pm4.57$  |$77.56\pm 7.12$|
 |hopper-medium-expert-v2| $50.90\pm6.48$  | $52.73\pm7.80$  |$105.47\pm5.03$   |$90.37 \pm 31.29$|
-|walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |-|
+|walker2d-medium-v2| $62.31\pm15.90$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|
 |walker2d-medium-expert-v2| $78.81\pm27.89$  | $109.08\pm0.25$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|
 
 # How to use this codebase for your own research
