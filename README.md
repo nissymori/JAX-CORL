@@ -84,6 +84,8 @@ def create_trainer(...):
 ```
 For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class. This includes setting up the models and defining hyperparameters.
 
+**Note**: So far, we could not follow the policy for CQL due to technical issue. This will be handled in near future.
+
 # See also
 **Great Offline RL libraries**
 - [CORL](https://github.com/tinkoff-ai/CORL): Comprehensive single-file implementations of offline RL algorithms in pytorch.
