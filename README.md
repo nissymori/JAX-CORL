@@ -1,5 +1,5 @@
 # JAX-CORL
-This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), clean **single-file** implementation of offline RL algorithms with **solid performance reports**.
+This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), clean **single-file** implementations of offline RL algorithms with **solid performance reports**.
 - 🌬️ Persuing **fast** training: speed up via jax functions such as `jit` and `vmap`.
 - 🔪 As **simple** as possible: implement minimum requirements.
 - 💠 Focus on **a few popular algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms).
@@ -20,14 +20,13 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 |[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |3304.1s (~56m)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
 |[DT](https://arxiv.org/abs/2106.01345) |🚧|-|-|
 
-Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
+Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
 
 # Reports for D4RL mujoco
 
 ### Normalized Score
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
-We plan to extend the verification to other D4RL banchmarks such as AntMaze. We used the same hyperparameters as original implementations.
-Also, we plan to add comparison of performance with other implementations.
+We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki)
 |env|AWAC|IQL|TD3+BC|CQL|
 |---|---|---|---|---|
 |halfcheetah-medium-v2| $41.56\pm0.79$ |$43.78\pm0.39$   |$48.12\pm0.42$   |$48.65\pm 0.49$|
@@ -37,7 +36,6 @@ Also, we plan to add comparison of performance with other implementations.
 |walker2d-medium-v2| $68.12\pm12.08$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|
 |walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.08\pm0.25$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|
 
-For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki)
 
 # How to use this codebase for your own research
 This codebase can be used independently as a baseline for D4RL projects. It is also designed to be flexible, allowing users to develop new algorithms or adapt it for datasets other than D4RL.
