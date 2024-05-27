@@ -44,7 +44,7 @@ class AWACConfig(BaseModel):
     actor_lr: float = 3e-4
     critic_lr: float = 3e-4
     # AWAC SPECIFIC
-    beta: float = 2.0
+    beta: float = 1.0
     tau: float = 0.005
     discount: float = 0.99
 
