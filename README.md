@@ -30,6 +30,8 @@ Also, we plan to add comparison of performance with other implementations.
 |walker2d-medium-v2| $68.12\pm12.08$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|
 |walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.08\pm0.25$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|
 
+For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki)
+
 # How to use this codebase for your own research
 This codebase can be used independently as a baseline for D4RL projects. It is also designed to be flexible, allowing users to develop new algorithms or adapt it for datasets other than D4RL.
 
