@@ -100,6 +100,9 @@ For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) whi
 - [decision-transformer-jax](https://github.com/yun-kwak/decision-transformer-jax): Jax implementation of [Decision Transformer](https://arxiv.org/abs/2106.01345) with Haiku.
 - [td3-bc-jax](https://github.com/ethanluoyc/td3_bc_jax): Direct port of [original implementation](https://github.com/sfujim/TD3_BC) with Haiku.
 
+**Single-file implementations**
+- [CleanRL](https://github.com/vwxyzjn/cleanrl): High-quality single-file implementations of online RL algorithms in PyTorch.
+- [PureJaxRL](https://github.com/luchris429/purejaxrl): High-quality single-file implementations of online RL algorithms in JAX.
 
 # Cite JAX-CORL
 ```
