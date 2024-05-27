@@ -5,6 +5,12 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 💠 Focus on **a few popular algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms).
 - 📈　Solid performance report ([README](https://github.com/nissymori/JAX-CORL?tab=readme-ov-file#reports-for-d4rl-mujoco), [Wiki](https://github.com/nissymori/JAX-CORL/wiki))
 
+JAX-CORL is complelenting single-file RL ecosystem by offering the combination of offline x JAX. 
+- [CleanRL](https://github.com/vwxyzjn/cleanrl): Online x PyTorch
+- [purejaxrl](https://github.com/luchris429/purejaxrl): Online x JAX
+- [CORL](https://github.com/tinkoff-ai/CORL): Offline x PyTorch
+- **JAX-CORL(ours): Offline x JAX**
+
 # Algorithms
 |Algorithm|implementation|training time| wandb |
 |---|---|---|---|
