@@ -102,7 +102,7 @@ For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) whi
 
 **Single-file implementations**
 - [CleanRL](https://github.com/vwxyzjn/cleanrl): High-quality single-file implementations of online RL algorithms in PyTorch.
-- [PureJaxRL](https://github.com/luchris429/purejaxrl): High-quality single-file implementations of online RL algorithms in JAX.
+- [purejaxrl](https://github.com/luchris429/purejaxrl): High-quality single-file implementations of online RL algorithms in JAX.
 
 # Cite JAX-CORL
 ```
