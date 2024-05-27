@@ -521,7 +521,7 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    wandb.init(project=config.project, config=conf_dict)
+    wandb.init(project=config.project, config=config)
     env = gym.make(config.env_name)
     rng = jax.random.PRNGKey(config.seed)
     state_dim = env.observation_space.shape[0]
