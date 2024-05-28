@@ -3,7 +3,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 🌬️ Persuing **fast** training: speed up via jax functions such as `jit` and `vmap`.
 - 🔪 As **simple** as possible: implement minimum requirements.
 - 💠 Focus on **a few battle-tested algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms).
-- 📈　Solid performance report ([README](https://github.com/nissymori/JAX-CORL?tab=readme-ov-file#reports-for-d4rl-mujoco), [Wiki](https://github.com/nissymori/JAX-CORL/wiki))
+- 📈　Solid performance report ([README](https://github.com/nissymori/JAX-CORL?tab=readme-ov-file#reports-for-d4rl-mujoco), [Wiki](https://github.com/nissymori/JAX-CORL/wiki)).
 
 JAX-CORL is complelenting single-file RL ecosystem by offering the combination of offline x JAX. 
 - [CleanRL](https://github.com/vwxyzjn/cleanrl): Online x PyTorch
@@ -26,7 +26,7 @@ Training time is average training time for 1000_000 update steps with 1000_000 s
 
 ### Normalized Score
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported the mean and standard deviation of the average normalized score of 5 episodes over 5 seeds.
-We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki)
+We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki).
 |env|AWAC|IQL|TD3+BC|CQL|
 |---|---|---|---|---|
 |halfcheetah-medium-v2| $41.56\pm0.79$ |$43.78\pm0.39$   |$48.12\pm0.42$   |$48.65\pm 0.49$|
