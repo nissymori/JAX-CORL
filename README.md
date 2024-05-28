@@ -2,7 +2,7 @@
 This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), clean **single-file** implementations of offline RL algorithms with **solid performance reports**.
 - 🌬️ Persuing **fast** training: speed up via jax functions such as `jit` and `vmap`.
 - 🔪 As **simple** as possible: implement minimum requirements.
-- 💠 Focus on **a few popular algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms).
+- 💠 Focus on **a few battle-tested algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms).
 - 📈　Solid performance report ([README](https://github.com/nissymori/JAX-CORL?tab=readme-ov-file#reports-for-d4rl-mujoco), [Wiki](https://github.com/nissymori/JAX-CORL/wiki))
 
 JAX-CORL is complelenting single-file RL ecosystem by offering the combination of offline x JAX. 
