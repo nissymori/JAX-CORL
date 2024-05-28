@@ -12,15 +12,15 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 - **JAX-CORL(ours): Offline x JAX**
 
 # Algorithms
-|Algorithm|implementation|training time| wandb |
-|---|---|---|---|
-|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |665.5s(~11m)| [link](https://api.wandb.ai/links/nissymori/mwi235j6) |
-|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m)| [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
-|[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
-|[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |3304.1s (~56m)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
+|Algorithm|implementation|training time (ours)|training time (CORL)| wandb |
+|---|---|---|---|---|
+|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |665.5s(~11m)|16083s(~4.46h) [link](https://api.wandb.ai/links/nissymori/mwi235j6) |
+|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m)|14775s(~4.08h)| [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
+|[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m)|8895s(~2.47h)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
+|[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |3304.1s (~56m)|41838s (~11.52h)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
 |[DT](https://arxiv.org/abs/2106.01345) |🚧|-|-|
 
-Training time is average training time for 1000_000 update steps with 1000_000 samples for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment) over 5 seeds. It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4).
+Training time is for `1000_000` update steps with batch size `256` for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
 
 # Reports for D4RL mujoco
 
