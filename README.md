@@ -25,7 +25,7 @@ Training time is average training time for 1000_000 update steps with 1000_000 s
 # Reports for D4RL mujoco
 
 ### Normalized Score
-Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported mean and standard deviation of the average normalized of 5 episodes over 5 seeds.
+Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported the mean and standard deviation of the average normalized score of 5 episodes over 5 seeds.
 We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki)
 |env|AWAC|IQL|TD3+BC|CQL|
 |---|---|---|---|---|
