@@ -156,20 +156,12 @@ def get_dataset(
         lim = 1 - eps
         dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
 
-    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
-    same_obs = np.all(
-        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
-        axis=-1,
-    )
-    dones = 1.0 - same_obs.astype(np.float32)
-    dones[-1] = 1
-
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
-        dones=jnp.array(dones, dtype=jnp.float32),
+        dones=jnp.array(dataset["terminals"], dtype=jnp.float32),
     )
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))

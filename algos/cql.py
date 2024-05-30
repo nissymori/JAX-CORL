@@ -1,28 +1,31 @@
+# source https://github.com/young-geng/JaxCQL
+# https://arxiv.org/abs/2006.04779
+import os
 import time
-from copy import copy, deepcopy
 from functools import partial
-from typing import Any, Callable, Dict, List, NamedTuple, Tuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
 import distrax
 import flax
+import flax.linen as nn
 import gym
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import tqdm
 import wandb
-from flax import linen as nn
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-from tqdm import tqdm
 
 
 class CQLConfig(BaseModel):
     # GENERAL
+    also: str = "CQL"
     project: str = "cql-jax"
-    env: str = "halfcheetah-medium-expert-v2"
+    env_name: str = "halfcheetah-medium-expert-v2"
     max_traj_length: int = 1000
     seed: int = 42
     batch_size: int = 256
@@ -33,6 +36,8 @@ class CQLConfig(BaseModel):
     max_steps: int = 1000000
     eval_interval: int = 10000
     eval_episodes: int = 5
+    normalize_state: bool = False
+    data_size: int = 1000000
     # NETWORK
     hidden_dims: Tuple[int] = (256, 256)
     orthogonal_init: bool = False
@@ -190,7 +195,9 @@ class FullyConnectedQFunction(nn.Module):
     def __call__(self, observations: jnp.ndarray, actions: jnp.ndarray) -> jnp.ndarray:
         x = jnp.concatenate([observations, actions], axis=-1)
         x = FullyConnectedNetwork(
-            output_dim=1, hidden_dims=self.hidden_dims, orthogonal_init=self.orthogonal_init
+            output_dim=1,
+            hidden_dims=self.hidden_dims,
+            orthogonal_init=self.orthogonal_init,
         )(x)
         return jnp.squeeze(x, -1)
 
@@ -263,36 +270,43 @@ class Transition(NamedTuple):
     dones: np.ndarray
 
 
-def get_d4rl_dataset(env):
+def get_dataset(
+    env: gym.Env, config: CQLConfig, clip_to_eps: bool = True, eps: float = 1e-3
+) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
-    return Transition(
+
+    if clip_to_eps:
+        lim = 1 - eps
+        dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
+
+    dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
         dones=jnp.array(dataset["terminals"], dtype=jnp.float32),
     )
-
-
-def evaluate(
-    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
-    env: gym.Env,
-    num_episodes: int,
-    obs_mean=0,
-    obs_std=1,
-):
-    episode_returns = []
-    for _ in range(num_episodes):
-        obs = env.reset()
-        done = False
-        total_reward = 0
-        while not done:
-            obs = (obs - obs_mean) / obs_std
-            action = policy_fn(obs=obs)
-            obs, reward, done, _ = env.step(action)
-            total_reward += reward
-        episode_returns.append(total_reward)
-    return env.get_normalized_score(np.mean(episode_returns)) * 100
+    dataset = dataset._replace(
+        actions=np.clip(dataset.actions, -config.clip_action, config.clip_action)
+    )
+    # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
+    rng = jax.random.PRNGKey(config.seed)
+    rng, rng_permute, rng_select = jax.random.split(rng, 3)
+    perm = jax.random.permutation(rng_permute, len(dataset.observations))
+    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
+    # normalize states
+    obs_mean, obs_std = 0, 1
+    if config.normalize_state:
+        obs_mean = dataset.observations.mean(0)
+        obs_std = dataset.observations.std(0)
+        dataset = dataset._replace(
+            observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
+            next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
+        )
+    return dataset, obs_mean, obs_std
 
 
 def collect_metrics(metrics, names, prefix=None):
@@ -718,46 +732,63 @@ class CQLTrainer(object):
         return {key: self.train_states[key].params for key in self.model_keys}
 
 
-if __name__ == "__main__":
-    wandb.init(project=config.project, config=config)
-
-    rng = jax.random.PRNGKey(config.seed)
-    env = gym.make(config.env)
-
-    dataset = get_d4rl_dataset(env)
-    dataset = dataset._replace(
-        rewards=dataset.rewards * config.reward_scale + config.reward_bias
-    )
-    dataset = dataset._replace(
-        actions=np.clip(dataset.actions, -config.clip_action, config.clip_action)
-    )
-
-    observation_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-
+def create_trainer(
+    observations: jnp.ndarray, actions: jnp.ndarray, config: CQLConfig
+) -> CQLTrainer:
     policy = TanhGaussianPolicy(
-        observation_dim,
-        action_dim,
-        config.hidden_dims,
-        config.orthogonal_init,
-        config.policy_log_std_multiplier,
-        config.policy_log_std_offset,
+        observation_dim=observations.shape[-1],
+        action_dim=actions.shape[-1],
+        hidden_dims=config.hidden_dims,
+        orthogonal_init=config.orthogonal_init,
+        log_std_multiplier=config.policy_log_std_multiplier,
+        log_std_offset=config.policy_log_std_offset,
     )
     qf = FullyConnectedQFunction(
-        observation_dim, action_dim, config.hidden_dims, config.orthogonal_init
+        observation_dim=observations.shape[-1],
+        action_dim=actions.shape[-1],
+        hidden_dims=config.hidden_dims,
+        orthogonal_init=config.orthogonal_init,
     )
+    rng = jax.random.PRNGKey(config.seed)
+    return CQLTrainer(config, policy, qf, rng)
+
+
+def evaluate(
+    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    env: gym.Env,
+    num_episodes: int,
+    obs_mean=0,
+    obs_std=1,
+):
+    episode_returns = []
+    for _ in range(num_episodes):
+        obs = env.reset()
+        done = False
+        total_reward = 0
+        while not done:
+            obs = (obs - obs_mean) / obs_std
+            action = policy_fn(obs=obs)
+            obs, reward, done, _ = env.step(action)
+            total_reward += reward
+        episode_returns.append(total_reward)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
+
+
+if __name__ == "__main__":
+    wandb.init(project=config.project, config=config)
+    rng = jax.random.PRNGKey(config.seed)
+    env = gym.make(config.env_name)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
 
     if config.target_entropy >= 0.0:
         config.target_entropy = -np.prod(env.action_space.shape).item()
 
-    rng, subrng = jax.random.split(rng)
-    sac = CQLTrainer(config, policy, qf, subrng)
+    sac = create_trainer(dataset.observations, dataset.actions, config)
     train_states, target_qf_params = sac._train_states, sac._target_qf_params
 
     num_steps = int(config.max_steps // config.n_jitted_updates)
     for step in tqdm(range(num_steps)):
         metrics = {"step": step}
-
         rng, update_rng = jax.random.split(rng)
         train_states, target_qf_params, metrics = sac.train(
             train_states, target_qf_params, dataset, update_rng, config, bc=False
@@ -765,22 +796,19 @@ if __name__ == "__main__":
         metrics.update(metrics)
 
         if step == 0 or (step + 1) % config.eval_interval == 0:
-            rng, subrng = jax.random.split(rng)
             policy_fn = partial(sac.get_actions, train_states=train_states)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
             )
-
-            metrics[f"{config.env}/normalized_score"] = normalized_score
-            print(config.env, step, metrics[f"{config.env}/normalized_score"])
+            metrics[f"{config.env_name}/normalized_score"] = normalized_score
+            print(config.env_name, step, metrics[f"{config.env_name}/normalized_score"])
         wandb.log(metrics)
 
     # final evaluation
-    rng, subrng = jax.random.split(rng)
     policy_fn = partial(sac.get_actions, train_states=train_states)
     normalized_score = evaluate(
         policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
     )
-    wandb.log({f"{config.env}/finel_normalized_score": normalized_score})
-    print(config.env, step, normalized_score)
+    wandb.log({f"{config.env_name}/finel_normalized_score": normalized_score})
+    print(config.env_name, step, normalized_score)
     wandb.finish()
