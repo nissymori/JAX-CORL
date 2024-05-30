@@ -394,9 +394,7 @@ if __name__ == "__main__":
     policy_fn = partial(
         agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
     )
-    normalized_score = evaluate(
-        policy_fn, env, config.eval_episodes, obs_mean, obs_std
-    )
+    normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
     print("Final evaluation score", normalized_score)
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
     wandb.finish()

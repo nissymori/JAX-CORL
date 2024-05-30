@@ -1,16 +1,15 @@
+import collections
 from functools import partial
 from typing import Any, Dict, NamedTuple, Tuple
 
 import d4rl
 import flax
 import gym
-import wandb
-import collections
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import wandb
 from flax import linen as nn
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
@@ -55,6 +54,7 @@ elif "walker" in config.env_name:
 else:
     raise ValueError("We only care about Mujoco envs for now.")
 config.rtg_target = rtg_target
+
 
 class MaskedCausalAttention(nn.Module):
     h_dim: int
@@ -547,8 +547,14 @@ if __name__ == "__main__":
             # evaluate on env
             normalized_score = evaluate(agent, env, config, state_mean, state_std)
             print(i, normalized_score)
-        wandb.log({"action_loss": action_loss, f"{config.env_name}/normalized_score": normalized_score, "step": i})
-    
+        wandb.log(
+            {
+                "action_loss": action_loss,
+                f"{config.env_name}/normalized_score": normalized_score,
+                "step": i,
+            }
+        )
+
     # final evaluation
     normalized_score = evaluate(agent, env, config, state_mean, state_std)
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
