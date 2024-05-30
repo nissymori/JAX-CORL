@@ -2,6 +2,7 @@
 # https://arxiv.org/abs/2006.04779
 import os
 import time
+from copy import deepcopy
 from functools import partial
 from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
@@ -14,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import tqdm
+import tqdm 
 import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
@@ -787,21 +788,21 @@ if __name__ == "__main__":
     train_states, target_qf_params = sac._train_states, sac._target_qf_params
 
     num_steps = int(config.max_steps // config.n_jitted_updates)
-    for step in tqdm(range(num_steps)):
-        metrics = {"step": step}
+    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
+        metrics = {"step": i}
         rng, update_rng = jax.random.split(rng)
         train_states, target_qf_params, metrics = sac.train(
             train_states, target_qf_params, dataset, update_rng, config, bc=False
         )
         metrics.update(metrics)
 
-        if step == 0 or (step + 1) % config.eval_interval == 0:
+        if i == 0 or (i + 1) % config.eval_interval == 0:
             policy_fn = partial(sac.get_actions, train_states=train_states)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
             )
             metrics[f"{config.env_name}/normalized_score"] = normalized_score
-            print(config.env_name, step, metrics[f"{config.env_name}/normalized_score"])
+            print(config.env_name, i, metrics[f"{config.env_name}/normalized_score"])
         wandb.log(metrics)
 
     # final evaluation
@@ -810,5 +811,5 @@ if __name__ == "__main__":
         policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
     )
     wandb.log({f"{config.env_name}/finel_normalized_score": normalized_score})
-    print(config.env_name, step, normalized_score)
+    print(config.env_name, i, normalized_score)
     wandb.finish()
