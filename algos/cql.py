@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import tqdm 
+import tqdm
 import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
