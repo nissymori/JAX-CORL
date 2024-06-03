@@ -31,9 +31,6 @@ class CQLConfig(BaseModel):
     seed: int = 42
     batch_size: int = 256
     n_jitted_updates: int = 8
-    reward_scale: float = 1.0
-    reward_bias: float = 0.0
-    clip_action: float = 0.999
     max_steps: int = 1000000
     eval_interval: int = 10000
     eval_episodes: int = 5
@@ -272,7 +269,7 @@ class Transition(NamedTuple):
 
 
 def get_dataset(
-    env: gym.Env, config: CQLConfig, clip_to_eps: bool = True, eps: float = 1e-3
+    env: gym.Env, config: CQLConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -286,9 +283,6 @@ def get_dataset(
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
         dones=jnp.array(dataset["terminals"], dtype=jnp.float32),
-    )
-    dataset = dataset._replace(
-        actions=np.clip(dataset.actions, -config.clip_action, config.clip_action)
     )
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))

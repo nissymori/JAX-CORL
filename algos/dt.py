@@ -1,6 +1,6 @@
 import collections
 from functools import partial
-from typing import Any, Dict, NamedTuple, Tuple
+from typing import Any, Dict, NamedTuple, Tuple, Sequence
 
 import d4rl
 import flax
@@ -21,25 +21,26 @@ class DTConfig(BaseModel):
     # GENERAL
     project: str = "decision-transformer"
     seed: int = 0
-    env_name: str = "walker2d-medium-v2"
+    env_name: str = "halfcheetah-medium-expert-v2"
     batch_size: int = 64
     num_eval_episodes: int = 5
     max_eval_ep_len: int = 1000
     max_steps: int = 20000
-    eval_interval: int = 2000
+    eval_interval: int = 200000
     # NETWORK
     context_len: int = 20
     n_blocks: int = 3
     embed_dim: int = 128
     n_heads: int = 1
     dropout_p: float = 0.1
-    lr: float = 1e-4
+    lr: float = 0.0008
     wt_decay: float = 1e-4
+    beta: Sequence = (0.9, 0.999)
+    clip_grads: float = 0.25
     warmup_steps: int = 10000
     # DT SPECIFIC
     rtg_scale: int = 1000
     rtg_target: int = None
-
 
 conf_dict = OmegaConf.from_cli()
 config: DTConfig = DTConfig(**conf_dict)
@@ -48,7 +49,7 @@ config: DTConfig = DTConfig(**conf_dict)
 if "halfcheetah" in config.env_name:
     rtg_target = 12000
 elif "hopper" in config.env_name:
-    rtg_target = 3600
+    rtg_target = 150000
 elif "walker" in config.env_name:
     rtg_target = 5000
 else:
@@ -66,23 +67,19 @@ class MaskedCausalAttention(nn.Module):
     def __call__(self, x: jnp.ndarray, training=True) -> jnp.ndarray:
         B, T, C = x.shape
         N, D = self.n_heads, C // self.n_heads
-
         # rearrange q, k, v as (B, N, T, D)
         q = nn.Dense(self.h_dim)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
         k = nn.Dense(self.h_dim)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
         v = nn.Dense(self.h_dim)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
-
         # causal mask
         ones = jnp.ones((self.max_T, self.max_T))
         mask = jnp.tril(ones).reshape(1, 1, self.max_T, self.max_T)
-
         # weights (B, N, T, T) jax
         weights = jnp.einsum("bntd,bnfd->bntf", q, k) / jnp.sqrt(D)
         # causal mask applied to weights
         weights = jnp.where(mask[..., :T, :T] == 0, -jnp.inf, weights[..., :T, :T])
         # normalize weights, all -inf -> 0 after softmax
         normalized_weights = jax.nn.softmax(weights, axis=-1)
-
         # attention (B, N, T, D)
         attention = nn.Dropout(self.drop_p, deterministic=not training)(
             jnp.einsum("bntf,bnfd->bntd", normalized_weights, v)
@@ -136,17 +133,14 @@ class DecisionTransformer(nn.Module):
             Block(self.h_dim, 3 * self.context_len, self.n_heads, self.drop_p)
             for _ in range(self.n_blocks)
         ]
-
         # projection heads (project to embedding)
         self.embed_ln = nn.LayerNorm()
         self.embed_timestep = nn.Embed(self.max_timestep, self.h_dim)
         self.embed_rtg = nn.Dense(self.h_dim)
         self.embed_state = nn.Dense(self.h_dim)
-
         # continuous actions
         self.embed_action = nn.Dense(self.h_dim)
         self.use_action_tanh = True
-
         # prediction heads
         self.predict_rtg = nn.Dense(1)
         self.predict_state = nn.Dense(self.state_dim)
@@ -163,12 +157,10 @@ class DecisionTransformer(nn.Module):
         B, T, _ = states.shape
 
         time_embeddings = self.embed_timestep(timesteps)
-
         # time embeddings are treated similar to positional embeddings
         state_embeddings = self.embed_state(states) + time_embeddings
         action_embeddings = self.embed_action(actions) + time_embeddings
         returns_embeddings = self.embed_rtg(returns_to_go) + time_embeddings
-
         # stack rtg, states and actions and reshape sequence as
         # (r1, s1, a1, r2, s2, a2 ...)
         h = (
@@ -176,19 +168,15 @@ class DecisionTransformer(nn.Module):
             .transpose(0, 2, 1, 3)
             .reshape(B, 3 * T, self.h_dim)
         )
-
         h = self.embed_ln(h)
-
         # transformer and prediction
         for block in self.blocks:
             h = block(h, training=training)
-
         # get h reshaped such that its size = (B x 3 x T x h_dim) and
         # h[:, 0, t] is conditioned on r_0, s_0, a_0 ... r_t
         # h[:, 1, t] is conditioned on r_0, s_0, a_0 ... r_t, s_t
         # h[:, 2, t] is conditioned on r_0, s_0, a_0 ... r_t, s_t, a_t
         h = h.reshape(B, T, 3, self.h_dim).transpose(0, 2, 1, 3)
-
         # get predictions
         return_preds = self.predict_rtg(h[:, 2])  # predict next rtg given r, s, a
         state_preds = self.predict_state(h[:, 2])  # predict next state given r, s, a
@@ -269,10 +257,8 @@ def make_padded_trajectories(
     config: DTConfig,
 ) -> Tuple[Trajectory, int, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     trajectories, mean, std = get_traj(config.env_name)
-
     # Calculate returns to go for all trajectories
     # Normalize states
-    # Calculate max len of traj
     max_len = 0
     traj_lengths = []
     for traj in trajectories:
@@ -280,7 +266,6 @@ def make_padded_trajectories(
         traj["observations"] = (traj["observations"] - mean) / std
         max_len = max(max_len, traj["observations"].shape[0])
         traj_lengths.append(traj["observations"].shape[0])
-
     # Pad trajectories
     padded_trajectories = {key: [] for key in Trajectory._fields}
     for traj in trajectories:
@@ -300,7 +285,6 @@ def make_padded_trajectories(
                 np.ones((len(traj["observations"]), 1)).reshape(-1, 1), max_len
             ).reshape(-1)
         )
-
     return (
         Trajectory(
             timesteps=np.stack(padded_trajectories["timesteps"]),
@@ -353,9 +337,7 @@ def sample_traj_batch(
     traj_idx = jax.random.randint(rng, (batch_size,), 0, episode_num)  # B
     start_idx = jax.vmap(sample_start_idx, in_axes=(0, 0, None, None))(
         jax.random.split(rng, batch_size), traj_idx, padded_traj_lengths, context_len
-    ).reshape(
-        -1
-    )  # B
+    ).reshape(-1)  # B
     return jax.vmap(extract_traj, in_axes=(0, 0, None, None))(
         traj_idx, start_idx, traj, context_len
     )
@@ -375,7 +357,6 @@ class DTTrainer(NamedTuple):
             batch.returns_to_go,
             batch.masks,
         )
-
         def loss_fn(params):
             state_preds, action_preds, return_preds = agent.train_state.apply_fn(
                 params, timesteps, states, actions, returns_to_go, rngs={"dropout": rng}
@@ -385,13 +366,10 @@ class DTTrainer(NamedTuple):
             action_preds_masked = action_preds * traj_mask[:, :, None]
             # Calculate mean squared error loss
             action_loss = jnp.mean(jnp.square(action_preds_masked - actions_masked))
-
             return action_loss
-
         grad_fn = jax.value_and_grad(loss_fn)
         loss, grad = grad_fn(agent.train_state.params)
         # Apply gradient clipping
-        grad = jax.tree_util.tree_map(lambda g: jnp.clip(g, -0.25, 0.25), grad)
         train_state = agent.train_state.apply_gradients(grads=grad)
         return agent._replace(train_state=train_state), loss
 
@@ -424,7 +402,6 @@ def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainer:
         n_heads=config.n_heads,
         drop_p=config.dropout_p,
     )
-
     rng = jax.random.PRNGKey(config.seed)
     rng, init_rng = jax.random.split(rng)
     # initialize params
@@ -441,10 +418,10 @@ def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainer:
         init_value=config.lr, decay_steps=config.warmup_steps
     )
     tx = optax.chain(
+        optax.clip_by_global_norm(config.clip_grads),
         optax.scale_by_schedule(scheduler),
-        optax.adamw(learning_rate=config.lr, weight_decay=config.wt_decay),
+        optax.adamw(learning_rate=config.lr, weight_decay=config.wt_decay, b1=config.beta[0], b2=config.beta[1]),
     )
-
     train_state = TrainState.create(apply_fn=model.apply, params=params, tx=tx)
     return DTTrainer(train_state)
 
@@ -456,13 +433,10 @@ def evaluate(
     state_mean=0,
     state_std=1,
 ) -> float:
-
     eval_batch_size = 1  # required for forward pass
-
     results = {}
     total_reward = 0
     total_timesteps = 0
-
     state_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
     # same as timesteps used for training the transformer
@@ -554,7 +528,6 @@ if __name__ == "__main__":
                 "step": i,
             }
         )
-
     # final evaluation
     normalized_score = evaluate(agent, env, config, state_mean, state_std)
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
