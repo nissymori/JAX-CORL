@@ -15,7 +15,7 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 |Algorithm|implementation|training time (ours)|training time (CORL)| wandb |
 |---|---|---|---|---|
 |[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |665.5s(~11m)|16083s(~4.46h) |[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
-|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m)|14775s(~4.08h)| [link](https://api.wandb.ai/links/nissymori/iqo688bi) |
+|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m)|14775s(~4.08h)| [link](https://api.wandb.ai/links/nissymori/hazajm9q) |
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m)|8895s(~2.47h)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
 |[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |3304.1s (~56m)|41838s (~11.52h)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
 |[DT](https://arxiv.org/abs/2106.01345) |🚧|-|-|
