@@ -29,12 +29,12 @@ Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as t
 We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki).
 |env|AWAC|IQL|TD3+BC|CQL|
 |---|---|---|---|---|
-|halfcheetah-medium-v2| $41.56\pm0.79$ |$43.78\pm0.39$   |$48.12\pm0.42$   |$48.65\pm 0.49$|
-|halfcheetah-medium-expert-v2| $76.61\pm 9.60$ | $89.05\pm4.11$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$| 
-|hopper-medium-v2| $51.45\pm 5.40$  | $46.51\pm4.56$  | $46.51\pm4.57$  |$77.56\pm 7.12$|
-|hopper-medium-expert-v2| $51.89\pm2.11$  | $52.73\pm7.80$  |$105.47\pm5.03$   |$90.37 \pm 31.29$|
-|walker2d-medium-v2| $68.12\pm12.08$ | $77.87\pm3.16$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|
-|walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.08\pm0.25$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|
+|halfcheetah-medium-v2| $41.56\pm0.79$ |$43.28\pm0.51$   |$48.12\pm0.42$   |$48.65\pm 0.49$|
+|halfcheetah-medium-expert-v2| $76.61\pm 9.60$ | $92.87\pm0.61$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$| 
+|hopper-medium-v2| $51.45\pm 5.40$  | $52.17\pm2.88$  | $46.51\pm4.57$  |$77.56\pm 7.12$|
+|hopper-medium-expert-v2| $51.89\pm2.11$  | $53.35\pm5.63$  |$105.47\pm5.03$   |$90.37 \pm 31.29$|
+|walker2d-medium-v2| $68.12\pm12.08$ | $75.33\pm5.2$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|
+|walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.07\pm0.32$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|
 
 
 # How to use this codebase for your own research
