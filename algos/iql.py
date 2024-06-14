@@ -293,7 +293,8 @@ class IQLTrainer(NamedTuple):
             new_target_critic = target_update(
                 agent.critic, agent.target_critic, config.tau
             )
-        return agent._replace(target_critic=new_target_critic), {
+            agent = agent._replace(target_critic=new_target_critic)
+        return agent, {
             "value_loss": value_loss,
             "actor_loss": actor_loss,
             "critic_loss": critic_loss,
