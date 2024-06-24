@@ -41,7 +41,7 @@ class TD7Config(BaseModel):
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
-    prioritized: bool = False
+    prioritized: bool = True
     # NETWORK
     hidden_dim: int = 256
     zs_dim: int = 256
