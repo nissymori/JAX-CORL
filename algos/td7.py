@@ -318,7 +318,7 @@ class TD7Trainer(NamedTuple):
             actor_loss = (
                 -q.mean()
                 + config.lmbda
-                * jax.lax.stop_gradient(jnp.abs(q).mean())
+                * jnp.abs(q).mean()
                 * jnp.square(action - batch.actions).mean()
             )
             return actor_loss
@@ -583,7 +583,7 @@ if __name__ == "__main__":
         )  # update parameters
         if i % target_update_rate == 0:  # update target networks
             agent = agent.update_targets(dataset)
-            
+
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
