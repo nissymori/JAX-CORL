@@ -1,6 +1,6 @@
 import collections
 from functools import partial
-from typing import Any, Dict, NamedTuple, Tuple, Sequence
+from typing import Any, Dict, NamedTuple, Sequence, Tuple
 
 import d4rl
 import flax
@@ -41,6 +41,7 @@ class DTConfig(BaseModel):
     # DT SPECIFIC
     rtg_scale: int = 1000
     rtg_target: int = None
+
 
 conf_dict = OmegaConf.from_cli()
 config: DTConfig = DTConfig(**conf_dict)
@@ -337,7 +338,9 @@ def sample_traj_batch(
     traj_idx = jax.random.randint(rng, (batch_size,), 0, episode_num)  # B
     start_idx = jax.vmap(sample_start_idx, in_axes=(0, 0, None, None))(
         jax.random.split(rng, batch_size), traj_idx, padded_traj_lengths, context_len
-    ).reshape(-1)  # B
+    ).reshape(
+        -1
+    )  # B
     return jax.vmap(extract_traj, in_axes=(0, 0, None, None))(
         traj_idx, start_idx, traj, context_len
     )
@@ -357,6 +360,7 @@ class DTTrainer(NamedTuple):
             batch.returns_to_go,
             batch.masks,
         )
+
         def loss_fn(params):
             state_preds, action_preds, return_preds = agent.train_state.apply_fn(
                 params, timesteps, states, actions, returns_to_go, rngs={"dropout": rng}
@@ -367,6 +371,7 @@ class DTTrainer(NamedTuple):
             # Calculate mean squared error loss
             action_loss = jnp.mean(jnp.square(action_preds_masked - actions_masked))
             return action_loss
+
         grad_fn = jax.value_and_grad(loss_fn)
         loss, grad = grad_fn(agent.train_state.params)
         # Apply gradient clipping
@@ -420,7 +425,12 @@ def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainer:
     tx = optax.chain(
         optax.clip_by_global_norm(config.clip_grads),
         optax.scale_by_schedule(scheduler),
-        optax.adamw(learning_rate=config.lr, weight_decay=config.wt_decay, b1=config.beta[0], b2=config.beta[1]),
+        optax.adamw(
+            learning_rate=config.lr,
+            weight_decay=config.wt_decay,
+            b1=config.beta[0],
+            b2=config.beta[1],
+        ),
     )
     train_state = TrainState.create(apply_fn=model.apply, params=params, tx=tx)
     return DTTrainer(train_state)

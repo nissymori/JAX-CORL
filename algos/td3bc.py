@@ -154,6 +154,7 @@ def get_dataset(
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
+    obs_mean, obs_std = 0, 1
     if config.normalize_state:
         obs_mean = dataset.observations.mean(0)
         obs_std = dataset.observations.std(0)
@@ -187,7 +188,6 @@ class TD3BCTrainer(NamedTuple):
     critic: TrainState
     target_actor: TrainState
     target_critic: TrainState
-    update_idx: jnp.int32
     max_action: float = 1.0
 
     def update_actor(
@@ -277,7 +277,7 @@ class TD3BCTrainer(NamedTuple):
                     target_critic=new_target_critic,
                     target_actor=new_target_actor,
                 )
-        return agent._replace(update_idx=agent.update_idx + 1), {
+        return agent, {
             "critic_loss": critic_loss,
             "actor_loss": actor_loss,
         }
@@ -333,7 +333,6 @@ def create_trainer(
         critic=critic_train_state,
         target_actor=target_actor_train_state,
         target_critic=target_critic_train_state,
-        update_idx=0,
     )
 
 
