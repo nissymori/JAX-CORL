@@ -1,5 +1,5 @@
-# source https://github.com/sfujim/TD3_BC
-# https://arxiv.org/abs/2106.06860
+# source https://github.com/sfujim/TD7
+# https://arxiv.org/abs/2306.02451
 import os
 import time
 from functools import partial
@@ -208,7 +208,7 @@ def get_dataset(
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         dones=jnp.array(dones, dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
-        priorities=jnp.zeros(len(dataset["observations"]), dtype=jnp.float32),
+        priorities=jnp.ones(len(dataset["observations"]), dtype=jnp.float32),
     )
     # shuffle data and select the first data_size samples
     data_size = min(config.data_size, len(dataset.observations))
@@ -234,9 +234,9 @@ def sample_batch(
     rng: jnp.ndarray, dataset: Transition, batch_size: int, prioritized, data_size: int
 ):
     if prioritized:
-        csum = jnp.cumsum(dataset.priorities)
-        cval = jnp.rand(rng, (batch_size,)) * csum[-1]
-        indices = jnp.searchsorted(csum, cval)
+        csum = jnp.cumsum(dataset.priorities, axis=0)
+        val = jax.random.uniform(rng, (batch_size,), minval=0, maxval=1) * csum[-1] 
+        indices = jnp.searchsorted(csum, val)
         batch = jax.tree_map(lambda x: x[indices], dataset)
     else:
         indices = jax.random.randint(rng, (batch_size,), 0, data_size)
@@ -369,7 +369,7 @@ class TD7Trainer(NamedTuple):
                 fixed_target_zsa,
             )
             target_q = target_q.min(axis=1, keepdims=True)[0]
-            target_q = batch.rewards + config.discount * (1.0 - batch.dones) * target_q
+            target_q = batch.rewards + config.discount * (1.0 - batch.dones) * target_q.clip(min=agent.min_target, max=agent.max_target)
             target_q = jax.lax.stop_gradient(target_q)[..., None]  # (batch_size, 1)
 
             fixed_zs, fixed_zsa = agent.fixed_encoder.apply_fn(
