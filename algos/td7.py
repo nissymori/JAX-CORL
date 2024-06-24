@@ -305,8 +305,8 @@ class TD7Trainer(NamedTuple):
                 method=Encoder.encoder,
             )
             action = agent.actor.apply_fn(actor_params, batch.observations, fixed_zs)
-            fixed_zsa = agent.fixed_target_encoder.apply_fn(
-                agent.fixed_target_encoder.params,
+            fixed_zsa = agent.fixed_encoder.apply_fn(
+                agent.fixed_encoder.params,
                 fixed_zs,
                 action,
                 method=Encoder.action_encoder,
@@ -445,18 +445,7 @@ class TD7Trainer(NamedTuple):
                 "actor_loss": actor_loss,
             },
         )
-    
-    @jax.jit
-    def update_targets(agent, data: Transition) -> "TD7Trainer":
-        return agent._replace(
-            target_critic=agent.critic,
-            target_actor=agent.actor,
-            fixed_encoder=agent.encoder,
-            fixed_target_encoder=agent.fixed_encoder,
-            max_priority=data.priorities.max(),
-            max_target=agent.max_,
-            min_target=agent.min_,
-        )
+
 
     @jax.jit
     def get_actions(
@@ -582,8 +571,16 @@ if __name__ == "__main__":
             config,
         )  # update parameters
         if i % target_update_rate == 0:  # update target networks
-            agent = agent.update_targets(dataset)
-            
+            return agent._replace(
+                target_critic=agent.critic,
+                target_actor=agent.actor,
+                fixed_encoder=agent.encoder,
+                fixed_target_encoder=agent.fixed_encoder,
+                max_priority=dataset.priorities.max(),
+                max_target=agent.max_,
+                min_target=agent.min_,
+            )
+
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
