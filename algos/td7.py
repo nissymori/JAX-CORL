@@ -231,7 +231,7 @@ def sample_batch(
 ):
     if prioritized:
         csum = jnp.cumsum(dataset.priorities, axis=0)
-        val = jax.random.uniform(rng, (batch_size,), minval=0, maxval=1) * csum[-1] 
+        val = jax.random.uniform(rng, (batch_size,), minval=0, maxval=1) * csum[-1]
         indices = jnp.searchsorted(csum, val)
         batch = jax.tree_map(lambda x: x[indices], dataset)
     else:
@@ -365,7 +365,9 @@ class TD7Trainer(NamedTuple):
                 fixed_target_zsa,
             )
             target_q = target_q.min(axis=1, keepdims=True)[0]
-            target_q = batch.rewards + config.discount * (1.0 - batch.dones) * target_q.clip(min=agent.min_target, max=agent.max_target)
+            target_q = batch.rewards + config.discount * (
+                1.0 - batch.dones
+            ) * target_q.clip(min=agent.min_target, max=agent.max_target)
             target_q = jax.lax.stop_gradient(target_q)[..., None]  # (batch_size, 1)
 
             fixed_zs, fixed_zsa = agent.fixed_encoder.apply_fn(
@@ -425,7 +427,7 @@ class TD7Trainer(NamedTuple):
             )
             # update networks
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            agent, encoder_loss = agent.update_encoder(batch, config)  # update encoder 
+            agent, encoder_loss = agent.update_encoder(batch, config)  # update encoder
             agent, (critic_loss, td_loss, target_q) = agent.update_critic(
                 batch, critic_rng, config
             )  # update critic
@@ -445,7 +447,6 @@ class TD7Trainer(NamedTuple):
                 "actor_loss": actor_loss,
             },
         )
-
 
     @jax.jit
     def get_actions(
@@ -571,7 +572,7 @@ if __name__ == "__main__":
             config,
         )  # update parameters
         if i % target_update_rate == 0:  # update target networks
-            return agent._replace(
+            agent = agent._replace(
                 target_critic=agent.critic,
                 target_actor=agent.actor,
                 fixed_encoder=agent.encoder,
