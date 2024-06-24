@@ -37,7 +37,6 @@ class TD7Config(BaseModel):
     n_jitted_updates: int = 10
     discount: float = 0.99  # discount factor
     target_update_rate: int = 250
-    exploration_noise: float = 0.1  # std of exploration noise
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
