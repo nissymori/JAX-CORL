@@ -19,6 +19,7 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m)|8895s(~2.47h)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
 |[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |3304.1s (~56m)|41838s (~11.52h)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
 |[DT](https://arxiv.org/abs/2106.01345) |🚧|-|-|
+|[TD7](https://arxiv.org/abs/2306.02451) |🚧|-|-|
 
 Training time is for `1000_000` update steps with batch size `256` for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
 
@@ -108,7 +109,7 @@ For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) whi
 
 # Cite JAX-CORL
 ```
-@article{nishimori2022jaxcorl,
+@article{nishimori2024jaxcorl,
   title={JAX-CORL: Clean Sigle-file Implementations of Offline RL Algorithms in JAX},
   author={Soichiro Nishimori},
   year={2024},
