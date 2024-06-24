@@ -40,7 +40,7 @@ class TD7Config(BaseModel):
     exploration_noise: float = 0.1  # std of exploration noise
     # DATASET
     data_size: int = int(1e6)
-    normalize_state: bool = True
+    normalize_state: bool = False
     prioritized: bool = False
     # NETWORK
     hidden_dim: int = 256
@@ -57,10 +57,6 @@ class TD7Config(BaseModel):
     min_priority: float = 1
     # TD3-BC
     lmbda: float = 0.1
-    # Checkpointing
-    max_eps_when_checkpointing: int = 20
-    steps_before_checkpointing: int = 75e4
-    reset_weight: float = 0.9
 
     def __hash__(
         self,
@@ -117,11 +113,11 @@ class AEncoder(nn.Module):
     activation: Callable = nn.elu
 
     @nn.compact
-    def __call__(self, state: jnp.ndarray, action: jnp.ndarray) -> jnp.ndarray:
-        zsa = jnp.concatenate([state, action], axis=-1)
+    def __call__(self, zs: jnp.ndarray, action: jnp.ndarray) -> jnp.ndarray:
+        zsa = jnp.concatenate([zs, action], axis=-1)
         zsa = self.activation(nn.Dense(self.hidden_dim)(zsa))
         zsa = self.activation(nn.Dense(self.hidden_dim)(zsa))
-        zsa = AvgL1Norm(nn.Dense(self.zs_dim)(zsa))
+        zsa = nn.Dense(self.zs_dim)(zsa)  # no AvgL1Norm for zsa
         return zsa
 
 
@@ -141,15 +137,15 @@ class Encoder(nn.Module):
 
     def __call__(self, state: jnp.ndarray, action: jnp.ndarray) -> jnp.ndarray:
         zs = self.encoder(state)
-        zsa = self.action_encoder(state, action)
+        zsa = self.action_encoder(zs, action)
         return zs, zsa
 
     def encoder(self, state: jnp.ndarray):
         zs = self.enc(state)
         return zs
 
-    def action_encoder(self, state: jnp.ndarray, action: jnp.ndarray):
-        zsa = self.a_enc(state, action)
+    def action_encoder(self, zs: jnp.ndarray, action: jnp.ndarray):
+        zsa = self.a_enc(zs, action)
         return zsa
 
 
@@ -223,6 +219,7 @@ def get_dataset(
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
+    obs_mean, obs_std = 0, 1
     if config.normalize_state:
         obs_mean = dataset.observations.mean(0)
         obs_std = dataset.observations.std(0)
@@ -269,12 +266,11 @@ class TD7Trainer(NamedTuple):
     target_critic: TrainState
     fixed_encoder: TrainState
     fixed_target_encoder: TrainState
-    update_idx: jnp.int32
     max_action: float = 1.0
     max_target: float = 0.0
     min_target: float = 0.0
-    max_: float = -1e-8
-    min_: float = 1e-8
+    max_: float = -1e8
+    min_: float = 1e8
     max_priority: float = 1.0
 
     def update_encoder(
@@ -288,9 +284,12 @@ class TD7Trainer(NamedTuple):
             )
             next_zs = jax.lax.stop_gradient(next_zs)
 
+            zs = agent.encoder.apply_fn(
+                encoder_params, batch.observations, method=Encoder.encoder
+            )
             pred_zs = agent.encoder.apply_fn(
                 encoder_params,
-                batch.observations,
+                zs,
                 batch.actions,
                 method=Encoder.action_encoder,
             )
@@ -312,7 +311,7 @@ class TD7Trainer(NamedTuple):
             action = agent.actor.apply_fn(actor_params, batch.observations, fixed_zs)
             fixed_zsa = agent.fixed_target_encoder.apply_fn(
                 agent.fixed_target_encoder.params,
-                batch.observations,
+                fixed_zs,
                 action,
                 method=Encoder.action_encoder,
             )
@@ -357,7 +356,7 @@ class TD7Trainer(NamedTuple):
             ).clip(-agent.max_action, agent.max_action)
             fixed_target_zsa = agent.fixed_target_encoder.apply_fn(
                 agent.fixed_target_encoder.params,
-                batch.next_observations,
+                fixed_target_zs,
                 next_action,
                 method=Encoder.action_encoder,
             )
@@ -405,7 +404,7 @@ class TD7Trainer(NamedTuple):
         Update the priorities of the samples corresponding to the given batch indices.
         """
         priority = jnp.power(
-            td_loss.max(axis=-1)[0].clip(config.min_priority), config.alpha
+            td_loss.max(axis=1)[0].clip(config.min_priority), config.alpha
         )
         new_priority = dataset.priorities.at[indices].set(priority)
         max_priority = jnp.maximum(jnp.max(new_priority), agent.max_priority)
@@ -430,21 +429,22 @@ class TD7Trainer(NamedTuple):
             )
             # update networks
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            agent, encoder_loss = agent.update_encoder(batch, config)
+            agent, encoder_loss = agent.update_encoder(batch, config)  # update encoder 
             agent, (critic_loss, td_loss, target_q) = agent.update_critic(
                 batch, critic_rng, config
-            )
+            )  # update critic
             agent = agent._replace(
                 max_=jnp.maximum(agent.max_, target_q.max()),
                 min_=jnp.minimum(agent.min_, target_q.min()),
-            )
-            agent, data = agent.update_lap(data, indices, td_loss, config)
-            if _ % config.policy_freq == 0:
+            )  # update max and min target
+            agent, data = agent.update_lap(data, indices, td_loss, config)  # update LAP
+            if _ % config.policy_freq == 0:  # update actor
                 agent, actor_loss = agent.update_actor(batch, actor_rng, config)
         return (
             agent,
             data,
             {
+                "encoder_loss": encoder_loss,
                 "critic_loss": critic_loss,
                 "actor_loss": actor_loss,
             },
@@ -531,7 +531,6 @@ def create_trainer(
         encoder=encoder_train_state,
         fixed_encoder=fixed_encoder_train_state,
         fixed_target_encoder=fixed_target_encoder_train_state,
-        update_idx=0,
     )
 
 
@@ -580,7 +579,7 @@ if __name__ == "__main__":
                 target_actor=agent.actor,
                 fixed_encoder=agent.encoder,
                 fixed_target_encoder=agent.fixed_encoder,
-                max_priority=agent.max_priority,
+                max_priority=dataset.priorities.max(),
                 max_target=agent.max_,
                 min_target=agent.min_,
             )

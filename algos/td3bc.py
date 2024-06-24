@@ -154,6 +154,7 @@ def get_dataset(
     assert len(dataset.observations) >= data_size
     dataset = jax.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
+    obs_mean, obs_std = 0, 1
     if config.normalize_state:
         obs_mean = dataset.observations.mean(0)
         obs_std = dataset.observations.std(0)
