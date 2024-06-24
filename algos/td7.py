@@ -39,7 +39,7 @@ class TD7Config(BaseModel):
     target_update_rate: int = 250
     # DATASET
     data_size: int = int(1e6)
-    normalize_state: bool = False
+    normalize_state: bool = True
     prioritized: bool = True
     # NETWORK
     hidden_dim: int = 256
