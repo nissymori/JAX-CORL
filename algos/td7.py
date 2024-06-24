@@ -445,6 +445,18 @@ class TD7Trainer(NamedTuple):
                 "actor_loss": actor_loss,
             },
         )
+    
+    @jax.jit
+    def update_targets(agent, data: Transition) -> "TD7Trainer":
+        return agent._replace(
+            target_critic=agent.critic,
+            target_actor=agent.actor,
+            fixed_encoder=agent.encoder,
+            fixed_target_encoder=agent.fixed_encoder,
+            max_priority=data.priorities.max(),
+            max_target=agent.max_,
+            min_target=agent.min_,
+        )
 
     @jax.jit
     def get_actions(
@@ -570,15 +582,8 @@ if __name__ == "__main__":
             config,
         )  # update parameters
         if i % target_update_rate == 0:  # update target networks
-            agent = agent._replace(
-                target_critic=agent.critic,
-                target_actor=agent.actor,
-                fixed_encoder=agent.encoder,
-                fixed_target_encoder=agent.fixed_encoder,
-                max_priority=dataset.priorities.max(),
-                max_target=agent.max_,
-                min_target=agent.min_,
-            )
+            agent = agent.update_targets(dataset)
+            
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
