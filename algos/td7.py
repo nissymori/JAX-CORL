@@ -68,10 +68,6 @@ conf_dict = OmegaConf.from_cli()
 config = TD7Config(**conf_dict)
 
 
-def default_init(scale: Optional[float] = jnp.sqrt(2)):
-    return nn.initializers.orthogonal(scale)
-
-
 def AvgL1Norm(x, eps=1e-8):
     return x / jnp.abs(x).mean(axis=-1, keepdims=True).clip(min=eps)
 
