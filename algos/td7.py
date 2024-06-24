@@ -68,11 +68,11 @@ conf_dict = OmegaConf.from_cli()
 config = TD7Config(**conf_dict)
 
 
-def AvgL1Norm(x, eps=1e-8):
+def AvgL1Norm(x: jnp.ndarray, eps=1e-8):
     return x / jnp.abs(x).mean(axis=-1, keepdims=True).clip(min=eps)
 
 
-def LAP_huber(x, min_priority=1):
+def LAP_huber(x: jnp.ndarray, min_priority=1):
     return jnp.where(x < min_priority, 0.5 * x**2, min_priority * x).sum(1).mean()
 
 
