@@ -26,14 +26,14 @@ class DTConfig(BaseModel):
     num_eval_episodes: int = 5
     max_eval_ep_len: int = 1000
     max_steps: int = 20000
-    eval_interval: int = 200000
+    eval_interval: int = 5000
     # NETWORK
     context_len: int = 20
     n_blocks: int = 3
     embed_dim: int = 128
     n_heads: int = 1
     dropout_p: float = 0.1
-    lr: float = 0.0008
+    lr: float = 1e-4
     wt_decay: float = 1e-4
     beta: Sequence = (0.9, 0.999)
     clip_grads: float = 0.25
@@ -286,6 +286,9 @@ def make_padded_trajectories(
                 np.ones((len(traj["observations"]), 1)).reshape(-1, 1), max_len
             ).reshape(-1)
         )
+    print(
+        f"Trajectory lengths: max = {max(traj_lengths)}, min = {min(traj_lengths)}, mean = {np.mean(traj_lengths)}, std = {np.std(traj_lengths)}"
+    )
     return (
         Trajectory(
             timesteps=np.stack(padded_trajectories["timesteps"]),
@@ -313,6 +316,7 @@ def sample_start_idx(
     To avoid that, we refer padded_traj_length, the list of actual trajectry length + context_len
     """
     traj_len = padded_traj_length[traj_idx]
+    lim = jnp.maximum(1, traj_len - context_len - 1)
     start_idx = jax.random.randint(rng, (1,), 0, traj_len - context_len - 1)
     return start_idx
 
@@ -515,7 +519,7 @@ if __name__ == "__main__":
     )
     # create trainer
     agent = create_trainer(state_dim, act_dim, config)
-    for i in tqdm(range(config.max_steps)):
+    for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
             data_rng,
@@ -531,13 +535,13 @@ if __name__ == "__main__":
             # evaluate on env
             normalized_score = evaluate(agent, env, config, state_mean, state_std)
             print(i, normalized_score)
-        wandb.log(
-            {
-                "action_loss": action_loss,
-                f"{config.env_name}/normalized_score": normalized_score,
-                "step": i,
-            }
-        )
+            wandb.log(
+                {
+                    "action_loss": action_loss,
+                    f"{config.env_name}/normalized_score": normalized_score,
+                    "step": i,
+                }
+            )
     # final evaluation
     normalized_score = evaluate(agent, env, config, state_mean, state_std)
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
