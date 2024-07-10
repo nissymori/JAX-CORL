@@ -526,7 +526,7 @@ if __name__ == "__main__":
     )
     # create trainer
     agent = create_trainer(state_dim, act_dim, config)
-    for i in tqdm(range(1, max_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
             data_rng,
@@ -542,13 +542,13 @@ if __name__ == "__main__":
             # evaluate on env
             normalized_score = evaluate(agent, env, config, state_mean, state_std)
             print(i, normalized_score)
-        wandb.log(
-            {
-                "action_loss": action_loss,
-                f"{config.env_name}/normalized_score": normalized_score,
-                "step": i,
-            }
-        )
+            wandb.log(
+                {
+                    "action_loss": action_loss,
+                    f"{config.env_name}/normalized_score": normalized_score,
+                    "step": i,
+                }
+            )
     # final evaluation
     normalized_score = evaluate(agent, env, config, state_mean, state_std)
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
