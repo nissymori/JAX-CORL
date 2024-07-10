@@ -1,6 +1,6 @@
 import collections
 from functools import partial
-from typing import Any, Dict, NamedTuple, Sequence, Tuple
+from typing import Any, Dict, NamedTuple, Sequence, Tuple, Callable, Optional
 
 import d4rl
 import flax
@@ -26,14 +26,14 @@ class DTConfig(BaseModel):
     num_eval_episodes: int = 5
     max_eval_ep_len: int = 1000
     max_steps: int = 20000
-    eval_interval: int = 5000
+    eval_interval: int = 2000
     # NETWORK
     context_len: int = 20
     n_blocks: int = 3
     embed_dim: int = 128
     n_heads: int = 1
     dropout_p: float = 0.1
-    lr: float = 1e-4
+    lr: float = 0.0008
     wt_decay: float = 1e-4
     beta: Sequence = (0.9, 0.999)
     clip_grads: float = 0.25
@@ -50,7 +50,7 @@ config: DTConfig = DTConfig(**conf_dict)
 if "halfcheetah" in config.env_name:
     rtg_target = 12000
 elif "hopper" in config.env_name:
-    rtg_target = 150000
+    rtg_target = 3600
 elif "walker" in config.env_name:
     rtg_target = 5000
 else:
@@ -58,20 +58,25 @@ else:
 config.rtg_target = rtg_target
 
 
+def default_init(scale: Optional[float] = jnp.sqrt(2)):
+    return nn.initializers.orthogonal(scale)
+
+
 class MaskedCausalAttention(nn.Module):
     h_dim: int
     max_T: int
     n_heads: int
     drop_p: float
+    kernel_init: Callable = default_init()
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, training=True) -> jnp.ndarray:
         B, T, C = x.shape
         N, D = self.n_heads, C // self.n_heads
         # rearrange q, k, v as (B, N, T, D)
-        q = nn.Dense(self.h_dim)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
-        k = nn.Dense(self.h_dim)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
-        v = nn.Dense(self.h_dim)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
+        q = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
+        k = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
+        v = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
         # causal mask
         ones = jnp.ones((self.max_T, self.max_T))
         mask = jnp.tril(ones).reshape(1, 1, self.max_T, self.max_T)
@@ -98,6 +103,7 @@ class Block(nn.Module):
     max_T: int
     n_heads: int
     drop_p: float
+    kernel_init: Callable = default_init()
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, training=True) -> jnp.ndarray:
@@ -109,9 +115,9 @@ class Block(nn.Module):
         )  # residual
         x = nn.LayerNorm()(x)
         # MLP
-        out = nn.Dense(4 * self.h_dim)(x)
+        out = nn.Dense(4 * self.h_dim, kernel_init=self.kernel_init)(x)
         out = nn.gelu(out)
-        out = nn.Dense(self.h_dim)(out)
+        out = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(out)
         out = nn.Dropout(self.drop_p, deterministic=not training)(out)
         # residual
         x = x + out
@@ -128,6 +134,7 @@ class DecisionTransformer(nn.Module):
     n_heads: int
     drop_p: float
     max_timestep: int = 4096
+    kernel_init: Callable = default_init()
 
     def setup(self) -> None:
         self.blocks = [
@@ -137,15 +144,15 @@ class DecisionTransformer(nn.Module):
         # projection heads (project to embedding)
         self.embed_ln = nn.LayerNorm()
         self.embed_timestep = nn.Embed(self.max_timestep, self.h_dim)
-        self.embed_rtg = nn.Dense(self.h_dim)
-        self.embed_state = nn.Dense(self.h_dim)
+        self.embed_rtg = nn.Dense(self.h_dim, kernel_init=self.kernel_init)
+        self.embed_state = nn.Dense(self.h_dim, kernel_init=self.kernel_init)
         # continuous actions
-        self.embed_action = nn.Dense(self.h_dim)
+        self.embed_action = nn.Dense(self.h_dim, kernel_init=self.kernel_init)
         self.use_action_tanh = True
         # prediction heads
-        self.predict_rtg = nn.Dense(1)
-        self.predict_state = nn.Dense(self.state_dim)
-        self.predict_action = nn.Dense(self.act_dim)
+        self.predict_rtg = nn.Dense(1, kernel_init=self.kernel_init)
+        self.predict_state = nn.Dense(self.state_dim, kernel_init=self.kernel_init)
+        self.predict_action = nn.Dense(self.act_dim, kernel_init=self.kernel_init)
 
     def __call__(
         self,
@@ -286,9 +293,6 @@ def make_padded_trajectories(
                 np.ones((len(traj["observations"]), 1)).reshape(-1, 1), max_len
             ).reshape(-1)
         )
-    print(
-        f"Trajectory lengths: max = {max(traj_lengths)}, min = {min(traj_lengths)}, mean = {np.mean(traj_lengths)}, std = {np.std(traj_lengths)}"
-    )
     return (
         Trajectory(
             timesteps=np.stack(padded_trajectories["timesteps"]),
@@ -316,7 +320,6 @@ def sample_start_idx(
     To avoid that, we refer padded_traj_length, the list of actual trajectry length + context_len
     """
     traj_len = padded_traj_length[traj_idx]
-    lim = jnp.maximum(1, traj_len - context_len - 1)
     start_idx = jax.random.randint(rng, (1,), 0, traj_len - context_len - 1)
     return start_idx
 
@@ -324,6 +327,9 @@ def sample_start_idx(
 def extract_traj(
     traj_idx: jnp.ndarray, start_idx: jnp.ndarray, traj: Trajectory, context_len: int
 ) -> Trajectory:
+    """
+    Extract the trajectory with context_len for given traj_idx and start_idx
+    """
     return jax.tree_map(
         lambda x: jax.lax.dynamic_slice_in_dim(x[traj_idx], start_idx, context_len),
         traj,
@@ -475,8 +481,7 @@ def evaluate(
         for t in range(config.max_eval_ep_len):
             total_timesteps += 1
             # add state in placeholder and normalize
-            states = states.at[0, t].set(running_state)
-            states = states.at[0, t].set((states[0, t] - state_mean) / state_std)
+            states = states.at[0, t].set((running_state - state_mean) / state_std)
             # calcualate running rtg and add in placeholder
             running_rtg = running_rtg - (running_reward / config.rtg_scale)
             rewards_to_go = rewards_to_go.at[0, t].set(running_rtg)
@@ -487,7 +492,7 @@ def evaluate(
                     actions[:, : t + 1],
                     rewards_to_go[:, : t + 1],
                 )
-                act = act_preds[0, t]
+                act = act_preds[0, -1]
             else:
                 act_preds = agent.get_action(
                     timesteps[:, t - config.context_len + 1 : t + 1],
@@ -519,7 +524,7 @@ if __name__ == "__main__":
     )
     # create trainer
     agent = create_trainer(state_dim, act_dim, config)
-    for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm(range(config.max_steps)):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
             data_rng,
@@ -535,13 +540,13 @@ if __name__ == "__main__":
             # evaluate on env
             normalized_score = evaluate(agent, env, config, state_mean, state_std)
             print(i, normalized_score)
-            wandb.log(
-                {
-                    "action_loss": action_loss,
-                    f"{config.env_name}/normalized_score": normalized_score,
-                    "step": i,
-                }
-            )
+        wandb.log(
+            {
+                "action_loss": action_loss,
+                f"{config.env_name}/normalized_score": normalized_score,
+                "step": i,
+            }
+        )
     # final evaluation
     normalized_score = evaluate(agent, env, config, state_mean, state_std)
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
