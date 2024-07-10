@@ -1,3 +1,5 @@
+# source https://github.com/nikhilbarhate99/min-decision-transformer
+# https://arxiv.org/abs/2106.01345
 import collections
 from functools import partial
 from typing import Any, Dict, NamedTuple, Sequence, Tuple, Callable, Optional
