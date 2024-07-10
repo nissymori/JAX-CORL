@@ -28,7 +28,7 @@ class DTConfig(BaseModel):
     num_eval_episodes: int = 5
     max_eval_ep_len: int = 1000
     max_steps: int = 20000
-    eval_interval: int = 2000
+    eval_interval: int = 200000
     # NETWORK
     context_len: int = 20
     n_blocks: int = 3
@@ -526,7 +526,7 @@ if __name__ == "__main__":
     )
     # create trainer
     agent = create_trainer(state_dim, act_dim, config)
-    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
             data_rng,
