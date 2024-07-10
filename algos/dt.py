@@ -526,7 +526,7 @@ if __name__ == "__main__":
     )
     # create trainer
     agent = create_trainer(state_dim, act_dim, config)
-    for i in tqdm(range(config.max_steps)):
+    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
             data_rng,
