@@ -67,6 +67,10 @@ conf_dict = OmegaConf.from_cli()
 config = TD7Config(**conf_dict)
 
 
+def default_init(scale: Optional[float] = jnp.sqrt(2)):
+    return nn.initializers.orthogonal(scale)
+
+
 def AvgL1Norm(x: jnp.ndarray, eps=1e-8):
     return x / jnp.abs(x).mean(axis=-1, keepdims=True).clip(min=eps)
 
@@ -79,26 +83,28 @@ class TD7Actor(nn.Module):
     action_dim: int
     hidden_dim: int = 256
     activation: Callable = nn.relu
+    kernel_init: Callable = default_init()
 
     @nn.compact
     def __call__(self, state: jnp.ndarray, zs: jnp.ndarray) -> jnp.ndarray:
-        action = AvgL1Norm(nn.Dense(self.hidden_dim)(state))
+        action = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(state))
         action = jnp.concatenate([action, zs], axis=-1)
-        action = self.activation(nn.Dense(self.hidden_dim)(action))
-        action = self.activation(nn.Dense(self.hidden_dim)(action))
-        return nn.tanh(nn.Dense(self.action_dim)(action))
+        action = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action))
+        action = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action))
+        return nn.tanh(nn.Dense(self.action_dim, kernel_init=self.kernel_init)(action))
 
 
 class SEncoder(nn.Module):
     zs_dim: int = 256
     hidden_dim: int = 256
     activation: Callable = nn.elu
+    kernel_init: Callable = default_init()
 
     @nn.compact
     def __call__(self, state: jnp.ndarray) -> jnp.ndarray:
-        zs = self.activation(nn.Dense(self.hidden_dim)(state))
-        zs = self.activation(nn.Dense(self.hidden_dim)(zs))
-        zs = AvgL1Norm(nn.Dense(self.zs_dim)(zs))
+        zs = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(state))
+        zs = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(zs))
+        zs = AvgL1Norm(nn.Dense(self.zs_dim, kernel_init=self.kernel_init)(zs))
         return zs
 
 
@@ -106,13 +112,14 @@ class AEncoder(nn.Module):
     zs_dim: int = 256
     hidden_dim: int = 256
     activation: Callable = nn.elu
+    kernel_init: Callable = default_init()
 
     @nn.compact
     def __call__(self, zs: jnp.ndarray, action: jnp.ndarray) -> jnp.ndarray:
         zsa = jnp.concatenate([zs, action], axis=-1)
-        zsa = self.activation(nn.Dense(self.hidden_dim)(zsa))
-        zsa = self.activation(nn.Dense(self.hidden_dim)(zsa))
-        zsa = nn.Dense(self.zs_dim)(zsa)  # no AvgL1Norm for zsa
+        zsa = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(zsa))
+        zsa = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(zsa))
+        zsa = nn.Dense(self.zs_dim, kernel_init=self.kernel_init)(zsa)  # no AvgL1Norm for zsa
         return zsa
 
 
@@ -149,6 +156,7 @@ class Critic(nn.Module):
     zs_dim: int = 256
     hidden_dim: int = 256
     activation: Callable = nn.elu
+    kernel_init: Callable = default_init()
 
     @nn.compact
     def __call__(
@@ -157,17 +165,17 @@ class Critic(nn.Module):
         sa = jnp.concatenate([state, action], axis=-1)
         embeddings = jnp.concatenate([zs, zsa], axis=-1)
 
-        q1 = AvgL1Norm(nn.Dense(self.hidden_dim)(sa))
+        q1 = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(sa))
         q1 = jnp.concatenate([q1, embeddings], axis=-1)
-        q1 = self.activation(nn.Dense(self.hidden_dim)(q1))
-        q1 = self.activation(nn.Dense(self.hidden_dim)(q1))
-        q1 = nn.Dense(1)(q1)
+        q1 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1))
+        q1 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1))
+        q1 = nn.Dense(1, kernel_init=self.kernel_init)(q1)
 
-        q2 = AvgL1Norm(nn.Dense(self.hidden_dim)(sa))
+        q2 = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(sa))
         q2 = jnp.concatenate([q2, embeddings], axis=-1)
-        q2 = self.activation(nn.Dense(self.hidden_dim)(q2))
-        q2 = self.activation(nn.Dense(self.hidden_dim)(q2))
-        q2 = nn.Dense(1)(q2)
+        q2 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2))
+        q2 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2))
+        q2 = nn.Dense(1, kernel_init=self.kernel_init)(q2)
         return jnp.concatenate([q1, q2], axis=-1)
 
 
