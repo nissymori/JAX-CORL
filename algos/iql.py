@@ -19,8 +19,7 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-
-os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
+os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
 class IQLConfig(BaseModel):

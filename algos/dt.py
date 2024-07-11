@@ -17,6 +17,7 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tqdm import tqdm
+os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
 class DTConfig(BaseModel):
