@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 class DTConfig(BaseModel):
     # GENERAL
+    algo: str = "DT"
     project: str = "decision-transformer"
     seed: int = 0
     env_name: str = "halfcheetah-medium-expert-v2"
