@@ -12,13 +12,13 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 - **JAX-CORL(ours): Offline x JAX**
 
 # Algorithms
-|Algorithm|implementation|training time (ours)|training time (CORL)| wandb |
+|Algorithm|implementation|training time (CORL)|training time (ours)| wandb |
 |---|---|---|---|---|
-|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |665.5s(~11m): **24x**|16083s(~4.46h) |[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
-|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |516.5s (~9m): **28x**|14775s(~4.08h)| [link](https://api.wandb.ai/links/nissymori/hazajm9q) |
-|[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |524.4s (~9m): **16x**|8895s(~2.47h)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
-|[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |3304.1s (~56m): **12x**|41838s (~11.52h)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
-|[DT](https://arxiv.org/abs/2106.01345) | [algos/dt.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/dt.py) |629.6s (~11m): |-|[link](https://api.wandb.ai/links/nissymori/yrpja8if)|
+|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |4.46h|11m(**24x**)|[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
+|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |4.08h|9m(**28x**)| [link](https://api.wandb.ai/links/nissymori/hazajm9q) |
+|[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |2.47h|9m(**16x**)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
+|[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |11.52h|56m(**12x**)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
+|[DT](https://arxiv.org/abs/2106.01345) | [algos/dt.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/dt.py) |-|11m()|[link](https://api.wandb.ai/links/nissymori/yrpja8if)|
 |[TD7](https://arxiv.org/abs/2306.02451) |🚧|-|-|-|
 
 Training time is for `1000_000` update steps without evaluation for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
