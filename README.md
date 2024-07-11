@@ -21,7 +21,7 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 |[DT](https://arxiv.org/abs/2106.01345) | [algos/dt.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/dt.py) |-|-|[link](https://api.wandb.ai/links/nissymori/yrpja8if)|
 |[TD7](https://arxiv.org/abs/2306.02451) |🚧|-|-|-|
 
-Training time is for `1000_000` update steps with batch size `256` for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
+Training time is for `1000_000` update steps without evaluation for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
 
 # Reports for D4RL mujoco
 
