@@ -5,7 +5,7 @@ This repository aims JAX version of [CORL](https://github.com/tinkoff-ai/CORL), 
 - 💠 Focus on **a few battle-tested algorithms**: Refer [here](https://github.com/nissymori/JAX-CORL/blob/main/README.md#algorithms).
 - 📈　Solid performance report ([README](https://github.com/nissymori/JAX-CORL?tab=readme-ov-file#reports-for-d4rl-mujoco), [Wiki](https://github.com/nissymori/JAX-CORL/wiki)).
 
-JAX-CORL is complelenting single-file RL ecosystem by offering the combination of offline x JAX. 
+JAX-CORL is complementing the single-file RL ecosystem by offering the combination of offline x JAX. 
 - [CleanRL](https://github.com/vwxyzjn/cleanrl): Online x PyTorch
 - [purejaxrl](https://github.com/luchris429/purejaxrl): Online x JAX
 - [CORL](https://github.com/tinkoff-ai/CORL): Offline x PyTorch
@@ -21,13 +21,13 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 |[DT](https://arxiv.org/abs/2106.01345) | [algos/dt.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/dt.py) |-|11m()|[link](https://api.wandb.ai/links/nissymori/yrpja8if)|
 |[TD7](https://arxiv.org/abs/2306.02451) |🚧|-|-|-|
 
-Training time is for `1000_000` update steps without evaluation for halfcheetah-medium-expert v2 (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environment). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
+Training time is for `1000_000` update steps without evaluation for `halfcheetah-medium-expert v2` (little difference between different [D4RL](https://arxiv.org/abs/2004.07219) mujoco environments). It includes the compile time for `jit`. The computations were performed using four [GeForce GTX 1080 Ti GPUs](https://versus.com/en/inno3d-ichill-geforce-gtx-1080-ti-x4). Overall, ours are at least 10 times faster than CORL. 
 
 # Reports for D4RL mujoco
 
 ### Normalized Score
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported the mean and standard deviation of the average normalized score of 5 episodes over 5 seeds.
-We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki).
+We plan to extend the verification to other D4RL benchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki).
 |env|AWAC|IQL|TD3+BC|CQL|DT|
 |---|---|---|---|---|---|
 |halfcheetah-medium-v2| $41.56\pm0.79$ |$43.28\pm0.51$   |$48.12\pm0.42$   |$48.65\pm 0.49$|$42.63 \pm 0.53$|
@@ -38,8 +38,8 @@ We plan to extend the verification to other D4RL banchmarks such as AntMaze. For
 |walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.07\pm0.32$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|$99.81\pm17.73$|
 
 
-# How to use this codebase for your own research
-This codebase can be used independently as a baseline for D4RL projects. It is also designed to be flexible, allowing users to develop new algorithms or adapt it for datasets other than D4RL.
+# How to use this codebase for your research
+This codebase can be used independently as a baseline for D4RL projects. It is also designed to be flexible, allowing users to develop new algorithms or adapt them for datasets other than D4RL.
 
 For researchers interested in using this code for their projects, we provide a detailed explanation of the code's shared structure:
 ##### Data structure
@@ -56,7 +56,7 @@ def get_dataset(...) -> Transition:
     ...
     return dataset
 ```
-The code includes a `Transition` class, defined as a `NamedTuple`, which includes fields for observations, actions, rewards, next observations, and done flags. The get_dataset function is expected to output data in the Transition format, making it adaptable to any dataset that conforms to this structure.
+The code includes a `Transition` class, defined as a `NamedTuple`, which contains fields for observations, actions, rewards, next observations, and done flags. The get_dataset function is expected to output data in the Transition format, making it adaptable to any dataset that conforms to this structure.
 
 ##### Trainer class
 ```py
@@ -89,8 +89,8 @@ def create_trainer(...):
         critic=critic,
     )
 ```
-For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class.
-**Note**: So far, we could not follow the policy for CQL due to technical issue. This will be handled in near future.
+For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, and update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class.
+**Note**: So far, we have not followed the policy for CQL due to technical issues. This will be handled in the near future.
 
 # See also
 **Great Offline RL libraries**
@@ -118,7 +118,7 @@ For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) whi
 ```
 
 # Credits
-- This project is inspired by [CORL](https://github.com/tinkoff-ai/CORL), a clean single-file implementations of offline RL algorithm in pytorch.
+- This project is inspired by [CORL](https://github.com/tinkoff-ai/CORL), clean single-file implementations of offline RL algorithm in pytorch.
 - I would like to thank [@JohannesAck](https://github.com/johannesack) for his TD3-BC codebase and helpful advices.
 - The IQL implementation is based on [implicit_q_learning](https://github.com/ikostrikov/implicit_q_learning).
 - AWAC implementation is based on [jaxrl](https://github.com/ikostrikov/jaxrl).
