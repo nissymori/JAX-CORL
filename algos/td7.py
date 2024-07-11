@@ -56,6 +56,7 @@ class TD7Config(BaseModel):
     min_priority: float = 1
     # TD3-BC
     lmbda: float = 0.1
+    initializer: str = "last_uniform"
 
     def __hash__(
         self,
@@ -65,6 +66,11 @@ class TD7Config(BaseModel):
 
 conf_dict = OmegaConf.from_cli()
 config = TD7Config(**conf_dict)
+
+def clip_uniform_initializers(min_val=-1, max_val=1):
+    def init(key, shape, dtype=jnp.float32):
+        return jax.random.uniform(key, shape, dtype, min_val, max_val)
+    return init
 
 
 def AvgL1Norm(x: jnp.ndarray, eps=1e-8):
@@ -79,6 +85,7 @@ class TD7Actor(nn.Module):
     action_dim: int
     hidden_dim: int = 256
     activation: Callable = nn.relu
+    kernel_init: Callable = clip_uniform_initializers(-0.03, 0.03)
 
     @nn.compact
     def __call__(self, state: jnp.ndarray, zs: jnp.ndarray) -> jnp.ndarray:
@@ -86,7 +93,7 @@ class TD7Actor(nn.Module):
         action = jnp.concatenate([action, zs], axis=-1)
         action = self.activation(nn.Dense(self.hidden_dim)(action))
         action = self.activation(nn.Dense(self.hidden_dim)(action))
-        return nn.tanh(nn.Dense(self.action_dim)(action))
+        return nn.tanh(nn.Dense(self.action_dim, kernel_init=self.kernel_init)(action))
 
 
 class SEncoder(nn.Module):
@@ -149,6 +156,7 @@ class Critic(nn.Module):
     zs_dim: int = 256
     hidden_dim: int = 256
     activation: Callable = nn.elu
+    kernel_init: Callable = clip_uniform_initializers(-0.03, 0.03)
 
     @nn.compact
     def __call__(
@@ -161,13 +169,13 @@ class Critic(nn.Module):
         q1 = jnp.concatenate([q1, embeddings], axis=-1)
         q1 = self.activation(nn.Dense(self.hidden_dim)(q1))
         q1 = self.activation(nn.Dense(self.hidden_dim)(q1))
-        q1 = nn.Dense(1)(q1)
+        q1 = nn.Dense(1, kernel_init=self.kernel_init)(q1)
 
         q2 = AvgL1Norm(nn.Dense(self.hidden_dim)(sa))
         q2 = jnp.concatenate([q2, embeddings], axis=-1)
         q2 = self.activation(nn.Dense(self.hidden_dim)(q2))
         q2 = self.activation(nn.Dense(self.hidden_dim)(q2))
-        q2 = nn.Dense(1)(q2)
+        q2 = nn.Dense(1, kernel_init=self.kernel_init)(q2)
         return jnp.concatenate([q1, q2], axis=-1)
 
 
