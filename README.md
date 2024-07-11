@@ -14,10 +14,10 @@ JAX-CORL is complelenting single-file RL ecosystem by offering the combination o
 # Algorithms
 |Algorithm|implementation|training time (CORL)|training time (ours)| wandb |
 |---|---|---|---|---|
-|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |4.46h|11m(**24x**)|[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
-|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |4.08h|9m(**28x**)| [link](https://api.wandb.ai/links/nissymori/hazajm9q) |
-|[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |2.47h|9m(**16x**)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
-|[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |11.52h|56m(**12x**)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
+|[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |4.46h|11m(**24x faster**)|[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
+|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |4.08h|9m(**28x faster**)| [link](https://api.wandb.ai/links/nissymori/hazajm9q) |
+|[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |2.47h|9m(**16x faster**)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
+|[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |11.52h|56m(**12x faster**)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
 |[DT](https://arxiv.org/abs/2106.01345) | [algos/dt.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/dt.py) |-|11m()|[link](https://api.wandb.ai/links/nissymori/yrpja8if)|
 |[TD7](https://arxiv.org/abs/2306.02451) |🚧|-|-|-|
 
