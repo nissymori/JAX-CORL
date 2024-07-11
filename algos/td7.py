@@ -56,7 +56,7 @@ class TD7Config(BaseModel):
     min_priority: float = 1
     # TD3-BC
     lmbda: float = 0.1
-    initializer: str = "he"
+    initializer: str = "last_uniform"
 
     def __hash__(
         self,
