@@ -2,7 +2,7 @@
 # https://arxiv.org/abs/2106.01345
 import collections
 from functools import partial
-from typing import Any, Dict, NamedTuple, Sequence, Tuple, Callable, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
 import d4rl
 import flax
@@ -77,9 +77,21 @@ class MaskedCausalAttention(nn.Module):
         B, T, C = x.shape
         N, D = self.n_heads, C // self.n_heads
         # rearrange q, k, v as (B, N, T, D)
-        q = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
-        k = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
-        v = nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x).reshape(B, T, N, D).transpose(0, 2, 1, 3)
+        q = (
+            nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x)
+            .reshape(B, T, N, D)
+            .transpose(0, 2, 1, 3)
+        )
+        k = (
+            nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x)
+            .reshape(B, T, N, D)
+            .transpose(0, 2, 1, 3)
+        )
+        v = (
+            nn.Dense(self.h_dim, kernel_init=self.kernel_init)(x)
+            .reshape(B, T, N, D)
+            .transpose(0, 2, 1, 3)
+        )
         # causal mask
         ones = jnp.ones((self.max_T, self.max_T))
         mask = jnp.tril(ones).reshape(1, 1, self.max_T, self.max_T)
