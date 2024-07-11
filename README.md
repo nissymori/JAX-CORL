@@ -28,14 +28,14 @@ Training time is for `1000_000` update steps with batch size `256` for halfcheet
 ### Normalized Score
 Here, we used [D4RL](https://arxiv.org/abs/2004.07219) mujoco control tasks as the benchmark. We reported the mean and standard deviation of the average normalized score of 5 episodes over 5 seeds.
 We plan to extend the verification to other D4RL banchmarks such as AntMaze. For those who would like to know about the source of hyperparameters and the validity of the performance, please refer to [Wiki](https://github.com/nissymori/JAX-CORL/wiki).
-|env|AWAC|IQL|TD3+BC|CQL|
-|---|---|---|---|---|
-|halfcheetah-medium-v2| $41.56\pm0.79$ |$43.28\pm0.51$   |$48.12\pm0.42$   |$48.65\pm 0.49$|
-|halfcheetah-medium-expert-v2| $76.61\pm 9.60$ | $92.87\pm0.61$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$| 
-|hopper-medium-v2| $51.45\pm 5.40$  | $52.17\pm2.88$  | $46.51\pm4.57$  |$77.56\pm 7.12$|
-|hopper-medium-expert-v2| $51.89\pm2.11$  | $53.35\pm5.63$  |$105.47\pm5.03$   |$90.37 \pm 31.29$|
-|walker2d-medium-v2| $68.12\pm12.08$ | $75.33\pm5.2$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|
-|walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.07\pm0.32$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|
+|env|AWAC|IQL|TD3+BC|CQL|DT|
+|---|---|---|---|---|---|
+|halfcheetah-medium-v2| $41.56\pm0.79$ |$43.28\pm0.51$   |$48.12\pm0.42$   |$48.65\pm 0.49$|$42.63 \pm 0.53$|
+|halfcheetah-medium-expert-v2| $76.61\pm 9.60$ | $92.87\pm0.61$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$|$70.63\pm 14.70$|
+|hopper-medium-v2| $51.45\pm 5.40$  | $52.17\pm2.88$  | $46.51\pm4.57$  |$77.56\pm 7.12$|$60.85\pm6.78$|
+|hopper-medium-expert-v2| $51.89\pm2.11$  | $53.35\pm5.63$  |$105.47\pm5.03$   |$90.37 \pm 31.29$|$109.07\pm 4.56$|
+|walker2d-medium-v2| $68.12\pm12.08$ | $75.33\pm5.2$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|$71.04 \pm5.64$|
+|walker2d-medium-expert-v2| $91.36\pm23.13$  | $109.07\pm0.32$  | $109.17\pm0.71$  |$110.03 \pm 0.72$|$99.81\pm17.73$|
 
 
 # How to use this codebase for your own research
