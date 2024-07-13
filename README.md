@@ -12,7 +12,7 @@ JAX-CORL is complementing the single-file RL ecosystem by offering the combinati
 - **JAX-CORL(ours): Offline x JAX**
 
 # Algorithms
-|Algorithm|implementation|training time (PyTorch)|training time (ours)| wandb |
+|Algorithm|implementation|training time (CORL)|training time (ours)| wandb |
 |---|---|---|---|---|
 |[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |4.46h|11m(**24x faster**)|[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
 |[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |4.08h|9m(**28x faster**)| [link](https://api.wandb.ai/links/nissymori/hazajm9q) |
