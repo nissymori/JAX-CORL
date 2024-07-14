@@ -1,5 +1,6 @@
 # source https://github.com/nikhilbarhate99/min-decision-transformer
 # https://arxiv.org/abs/2106.01345
+import os
 import collections
 from functools import partial
 from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
@@ -30,7 +31,7 @@ class DTConfig(BaseModel):
     num_eval_episodes: int = 5
     max_eval_ep_len: int = 1000
     max_steps: int = 20000
-    eval_interval: int = 200000
+    eval_interval: int = 2000
     # NETWORK
     context_len: int = 20
     n_blocks: int = 3
