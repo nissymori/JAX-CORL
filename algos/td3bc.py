@@ -149,9 +149,9 @@ def get_dataset(
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
-    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -167,7 +167,7 @@ def get_dataset(
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
 ) -> TrainState:
-    new_target_params = jax.tree_map(
+    new_target_params = jax.tree_util.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
     )
     return target_model.replace(params=new_target_params)
@@ -261,7 +261,7 @@ class TD3BCTrainer(NamedTuple):
             batch_idx = jax.random.randint(
                 batch_rng, (config.batch_size,), 0, len(data.observations)
             )
-            batch: Transition = jax.tree_map(lambda x: x[batch_idx], data)
+            batch: Transition = jax.tree_util.tree_map(lambda x: x[batch_idx], data)
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
             agent, critic_loss = agent.update_critic(batch, critic_rng, config)
             if _ % config.policy_freq == 0:
@@ -361,7 +361,7 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create agent
-    example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
+    example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
     agent = create_trainer(example_batch.observations, example_batch.actions, config)
 
     num_steps = config.max_steps // config.n_jitted_updates
