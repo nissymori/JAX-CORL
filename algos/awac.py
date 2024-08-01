@@ -162,9 +162,9 @@ def get_dataset(
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
-    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -180,7 +180,7 @@ def get_dataset(
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
 ) -> Tuple[TrainState, jnp.ndarray]:
-    new_target_params = jax.tree_map(
+    new_target_params = jax.tree_util.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
     )
     return target_model.replace(params=new_target_params)
@@ -267,7 +267,7 @@ class AWACTrainer(NamedTuple):
             batch_indices = jax.random.randint(
                 batch_rng, (config.batch_size,), 0, len(dataset.observations)
             )
-            batch = jax.tree_map(lambda x: x[batch_indices], dataset)
+            batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
 
             agent, critic_loss = agent.update_critic(batch, critic_rng, config)
             new_target_critic = target_update(
@@ -359,7 +359,7 @@ if __name__ == "__main__":
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create agent
-    example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
+    example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
     agent: AWACTrainer = create_trainer(
         example_batch.observations,
         example_batch.actions,

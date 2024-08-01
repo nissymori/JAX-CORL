@@ -347,7 +347,7 @@ def extract_traj(
     """
     Extract the trajectory with context_len for given traj_idx and start_idx
     """
-    return jax.tree_map(
+    return jax.tree_util.tree_map(
         lambda x: jax.lax.dynamic_slice_in_dim(x[traj_idx], start_idx, context_len),
         traj,
     )

@@ -289,9 +289,9 @@ def get_dataset(
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
-    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -393,7 +393,7 @@ class CQLTrainer(object):
             batch_indices = jax.random.randint(
                 batch_rng, (config.batch_size,), 0, len(dataset.observations)
             )
-            batch = jax.tree_map(lambda x: x[batch_indices], dataset)
+            batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
             train_states, target_q_params, metrics = self._train_step(
                 train_states, target_q_params, update_rng, batch, config, bc
             )

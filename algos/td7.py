@@ -216,9 +216,9 @@ def get_dataset(
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
-    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -238,10 +238,10 @@ def sample_batch(
         csum = jnp.cumsum(dataset.priorities, axis=0)
         val = jax.random.uniform(rng, (batch_size,), minval=0, maxval=1) * csum[-1]
         indices = jnp.searchsorted(csum, val)
-        batch = jax.tree_map(lambda x: x[indices], dataset)
+        batch = jax.tree_util.tree_map(lambda x: x[indices], dataset)
     else:
         indices = jax.random.randint(rng, (batch_size,), 0, data_size)
-        batch = jax.tree_map(lambda x: x[indices], dataset)
+        batch = jax.tree_util.tree_map(lambda x: x[indices], dataset)
     return batch, indices
 
 
@@ -563,7 +563,7 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create agent
-    example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
+    example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
     agent = create_trainer(example_batch.observations, example_batch.actions, config)
 
     num_steps = config.max_steps // config.n_jitted_updates

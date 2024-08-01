@@ -175,9 +175,9 @@ def get_dataset(
     rng = jax.random.PRNGKey(config.seed)
     rng, rng_permute, rng_select = jax.random.split(rng, 3)
     perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_map(lambda x: x[perm], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
     assert len(dataset.observations) >= data_size
-    dataset = jax.tree_map(lambda x: x[:data_size], dataset)
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -198,7 +198,7 @@ def expectile_loss(diff, expectile=0.8) -> jnp.ndarray:
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
 ) -> TrainState:
-    new_target_params = jax.tree_map(
+    new_target_params = jax.tree_util.tree_map(
         lambda p, tp: p * tau + tp * (1 - tau), model.params, target_model.params
     )
     return target_model.replace(params=new_target_params)
@@ -284,7 +284,7 @@ class IQLTrainer(NamedTuple):
             batch_indices = jax.random.randint(
                 subkey, (config.batch_size,), 0, len(dataset.observations)
             )
-            batch = jax.tree_map(lambda x: x[batch_indices], dataset)
+            batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
 
             agent, value_loss = agent.update_value(batch, config)
             agent, actor_loss = agent.update_actor(batch, config)
@@ -381,7 +381,7 @@ def evaluate(
 
 def get_normalization(dataset: Transition) -> float:
     # into numpy.ndarray
-    dataset = jax.tree_map(lambda x: np.array(x), dataset)
+    dataset = jax.tree_util.tree_map(lambda x: np.array(x), dataset)
     returns = []
     ret = 0
     for r, term in zip(dataset.rewards, dataset.dones):
@@ -401,7 +401,7 @@ if __name__ == "__main__":
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     # create agent
-    example_batch: Transition = jax.tree_map(lambda x: x[0], dataset)
+    example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
     agent: IQLTrainer = create_trainer(
         example_batch.observations,
         example_batch.actions,
