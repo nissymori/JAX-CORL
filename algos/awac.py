@@ -28,7 +28,7 @@ class AWACConfig(BaseModel):
     algo: str = "AWAC"
     project: str = "train-AWAC"
     env_name: str = "halfcheetah-medium-expert-v2"
-    seed: int = np.random.choice(1000000)
+    seed: int = 42
     eval_episodes: int = 5
     log_interval: int = 100000
     eval_interval: int = 10000
