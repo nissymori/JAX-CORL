@@ -19,6 +19,7 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
@@ -229,7 +230,9 @@ class IQL(object):
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
-            next_v = train_state.value.apply_fn(train_state.value.params, batch.next_observations)
+            next_v = train_state.value.apply_fn(
+                train_state.value.params, batch.next_observations
+            )
             target_q = batch.rewards + config.discount * (1 - batch.dones) * next_v
             q1, q2 = train_state.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
@@ -237,7 +240,9 @@ class IQL(object):
             critic_loss = ((q1 - target_q) ** 2 + (q2 - target_q) ** 2).mean()
             return critic_loss
 
-        new_critic, critic_loss = update_by_loss_grad(train_state.critic, critic_loss_fn)
+        new_critic, critic_loss = update_by_loss_grad(
+            train_state.critic, critic_loss_fn
+        )
         return train_state._replace(critic=new_critic), critic_loss
 
     def update_value(
@@ -418,14 +423,19 @@ if __name__ == "__main__":
     num_steps = config.max_steps // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(train_state, dataset, subkey, config)
+        train_state, update_info = algo.update_n_times(
+            train_state, dataset, subkey, config
+        )
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
-                algo.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0), train_state=train_state
+                algo.sample_actions,
+                temperature=0.0,
+                seed=jax.random.PRNGKey(0),
+                train_state=train_state,
             )
             normalized_score = evaluate(
                 policy_fn,
@@ -439,7 +449,10 @@ if __name__ == "__main__":
             wandb.log(eval_metrics, step=i)
     # final evaluation
     policy_fn = partial(
-        algo.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0), train_state=train_state
+        algo.sample_actions,
+        temperature=0.0,
+        seed=jax.random.PRNGKey(0),
+        train_state=train_state,
     )
     normalized_score = evaluate(
         policy_fn,

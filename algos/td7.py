@@ -19,6 +19,7 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
@@ -83,14 +84,20 @@ class TD7Actor(nn.Module):
     action_dim: int
     hidden_dim: int = 256
     activation: Callable = nn.relu
-    kernel_init: Callable = default_init() #clip_uniform_initializers(-0.03, 0.03)
+    kernel_init: Callable = default_init()  # clip_uniform_initializers(-0.03, 0.03)
 
     @nn.compact
     def __call__(self, state: jnp.ndarray, zs: jnp.ndarray) -> jnp.ndarray:
-        action = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(state))
+        action = AvgL1Norm(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(state)
+        )
         action = jnp.concatenate([action, zs], axis=-1)
-        action = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action))
-        action = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action))
+        action = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action)
+        )
+        action = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action)
+        )
         return nn.tanh(nn.Dense(self.action_dim, kernel_init=self.kernel_init)(action))
 
 
@@ -154,7 +161,7 @@ class Critic(nn.Module):
     zs_dim: int = 256
     hidden_dim: int = 256
     activation: Callable = nn.elu
-    kernel_init: Callable = default_init() #clip_uniform_initializers(-0.03, 0.03)
+    kernel_init: Callable = default_init()  # clip_uniform_initializers(-0.03, 0.03)
 
     @nn.compact
     def __call__(
@@ -165,14 +172,22 @@ class Critic(nn.Module):
 
         q1 = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(sa))
         q1 = jnp.concatenate([q1, embeddings], axis=-1)
-        q1 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1))
-        q1 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1))
+        q1 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1)
+        )
+        q1 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1)
+        )
         q1 = nn.Dense(1, kernel_init=self.kernel_init)(q1)
 
         q2 = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(sa))
         q2 = jnp.concatenate([q2, embeddings], axis=-1)
-        q2 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2))
-        q2 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2))
+        q2 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2)
+        )
+        q2 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2)
+        )
         q2 = nn.Dense(1, kernel_init=self.kernel_init)(q2)
         return jnp.concatenate([q1, q2], axis=-1)
 
@@ -300,11 +315,17 @@ class TD7(object):
             encoder_loss = jnp.square(next_zs - pred_zs).mean()
             return encoder_loss
 
-        new_encoder, encoder_loss = update_by_loss_grad(train_state.encoder, encoder_loss_fn)
+        new_encoder, encoder_loss = update_by_loss_grad(
+            train_state.encoder, encoder_loss_fn
+        )
         return train_state._replace(encoder=new_encoder), encoder_loss
 
     def update_actor(
-        self, train_state: TD7TrainState, batch: Transition, rng: jax.random.PRNGKey, config: TD7Config
+        self,
+        train_state: TD7TrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: TD7Config,
     ) -> Tuple["TD7TrainState", jnp.ndarray]:
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             fixed_zs = train_state.fixed_encoder.apply_fn(
@@ -312,7 +333,9 @@ class TD7(object):
                 batch.observations,
                 method=Encoder.encoder,
             )
-            action = train_state.actor.apply_fn(actor_params, batch.observations, fixed_zs)
+            action = train_state.actor.apply_fn(
+                actor_params, batch.observations, fixed_zs
+            )
             fixed_zsa = train_state.fixed_encoder.apply_fn(
                 train_state.fixed_encoder.params,
                 fixed_zs,
@@ -320,7 +343,11 @@ class TD7(object):
                 method=Encoder.action_encoder,
             )
             q = train_state.critic.apply_fn(
-                train_state.critic.params, batch.observations, action, fixed_zs, fixed_zsa
+                train_state.critic.params,
+                batch.observations,
+                action,
+                fixed_zs,
+                fixed_zsa,
             )
 
             actor_loss = (
@@ -335,7 +362,11 @@ class TD7(object):
         return train_state._replace(actor=new_actor), actor_loss
 
     def update_critic(
-        self, train_state: TD7TrainState, batch: Transition, rng: jax.random.PRNGKey, config: TD7Config
+        self,
+        train_state: TD7TrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: TD7Config,
     ) -> Tuple["TD7TrainState", jnp.ndarray]:
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
@@ -354,7 +385,9 @@ class TD7(object):
             ).clip(-config.policy_noise_clip, config.policy_noise_clip)
             next_action = (
                 train_state.target_actor.apply_fn(
-                    train_state.target_actor.params, batch.next_observations, fixed_target_zs
+                    train_state.target_actor.params,
+                    batch.next_observations,
+                    fixed_target_zs,
                 )
                 + noise
             ).clip(-train_state.max_action, train_state.max_action)
@@ -421,7 +454,7 @@ class TD7(object):
 
     @partial(jax.jit, static_argnums=(0, 4))
     def update_n_times(
-        self, 
+        self,
         train_state: TD7TrainState,
         data: Transition,
         rng: jax.random.PRNGKey,
@@ -437,17 +470,23 @@ class TD7(object):
             )
             # update networks
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            train_state, encoder_loss = train_state.update_encoder(batch, config)  # update encoder
-            train_state, (critic_loss, td_loss, target_q) = train_state.update_critic(
-                batch, critic_rng, config
+            train_state, encoder_loss = self.update_encoder(
+                train_state, batch, config
+            )  # update encoder
+            train_state, (critic_loss, td_loss, target_q) = self.update_critic(
+                train_state, batch, critic_rng, config
             )  # update critic
             train_state = train_state._replace(
                 max_=jnp.maximum(train_state.max_, target_q.max()),
                 min_=jnp.minimum(train_state.min_, target_q.min()),
             )  # update max and min target
-            train_state, data = train_state.update_lap(data, indices, td_loss, config)  # update LAP
+            train_state, data = self.update_lap(
+                train_state, data, indices, td_loss, config
+            )  # update LAP
             if _ % config.policy_freq == 0:  # update actor
-                train_state, actor_loss = train_state.update_actor(batch, actor_rng, config)
+                train_state, actor_loss = self.update_actor(
+                    train_state, batch, actor_rng, config
+                )
         return (
             train_state,
             data,
@@ -570,7 +609,9 @@ if __name__ == "__main__":
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create train_state
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_trainer(example_batch.observations, example_batch.actions, config)
+    train_state = create_trainer(
+        example_batch.observations, example_batch.actions, config
+    )
 
     algo = TD7()
 

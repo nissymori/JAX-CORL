@@ -19,6 +19,7 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
@@ -180,7 +181,7 @@ def update_by_loss_grad(
     loss, grad = grad_fn(train_state.params)
     new_train_state = train_state.apply_gradients(grads=grad)
     return new_train_state, loss
-    
+
 
 class TD3BCTrainState(NamedTuple):
     actor: TrainState
@@ -193,10 +194,16 @@ class TD3BCTrainState(NamedTuple):
 class TD3BC(object):
 
     def update_actor(
-        self, train_state: TD3BCTrainState, batch: Transition, rng: jax.random.PRNGKey, config: TD3BCConfig
+        self,
+        train_state: TD3BCTrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: TD3BCConfig,
     ) -> Tuple["TD3BCTrainState", jnp.ndarray]:
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            predicted_action = train_state.actor.apply_fn(actor_params, batch.observations)
+            predicted_action = train_state.actor.apply_fn(
+                actor_params, batch.observations
+            )
             critic_params = jax.lax.stop_gradient(train_state.critic.params)
             q_value, _ = train_state.critic.apply_fn(
                 critic_params, batch.observations, predicted_action
@@ -213,7 +220,11 @@ class TD3BC(object):
         return train_state._replace(actor=new_actor), actor_loss
 
     def update_critic(
-        self, train_state: TD3BCTrainState, batch: Transition, rng: jax.random.PRNGKey, config: TD3BCConfig
+        self,
+        train_state: TD3BCTrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: TD3BCConfig,
     ) -> Tuple["TD3BCTrainState", jnp.ndarray]:
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
@@ -236,7 +247,9 @@ class TD3BC(object):
                 -train_state.max_action, train_state.max_action
             )
             q_next_1, q_next_2 = train_state.target_critic.apply_fn(
-                train_state.target_critic.params, batch.next_observations, target_next_action
+                train_state.target_critic.params,
+                batch.next_observations,
+                target_next_action,
             )
             target = batch.rewards[..., None] + config.discount * jnp.minimum(
                 q_next_1, q_next_2
@@ -247,7 +260,9 @@ class TD3BC(object):
             value_loss = (value_loss_1 + value_loss_2).mean()
             return value_loss
 
-        new_critic, critic_loss = update_by_loss_grad(train_state.critic, critic_loss_fn)
+        new_critic, critic_loss = update_by_loss_grad(
+            train_state.critic, critic_loss_fn
+        )
         return train_state._replace(critic=new_critic), critic_loss
 
     @partial(jax.jit, static_argnums=(0, 4))
@@ -267,9 +282,13 @@ class TD3BC(object):
             )
             batch: Transition = jax.tree_util.tree_map(lambda x: x[batch_idx], data)
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            train_state, critic_loss = self.update_critic(train_state, batch, critic_rng, config)
+            train_state, critic_loss = self.update_critic(
+                train_state, batch, critic_rng, config
+            )
             if _ % config.policy_freq == 0:
-                train_state, actor_loss = self.update_actor(train_state, batch, actor_rng, config)
+                train_state, actor_loss = self.update_actor(
+                    train_state, batch, actor_rng, config
+                )
                 new_target_critic = target_update(
                     train_state.critic, train_state.target_critic, config.tau
                 )
@@ -367,7 +386,9 @@ if __name__ == "__main__":
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create train_state
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_trainer(example_batch.observations, example_batch.actions, config)
+    train_state = create_trainer(
+        example_batch.observations, example_batch.actions, config
+    )
     algo = TD3BC()
 
     num_steps = config.max_steps // config.n_jitted_updates

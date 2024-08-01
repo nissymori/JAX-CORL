@@ -19,6 +19,7 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True "
 
 
@@ -204,7 +205,11 @@ class AWACTrainState(NamedTuple):
 
 class AWAC(object):
     def update_actor(
-        self, train_state: AWACTrainState, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
+        self,
+        train_state: AWACTrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: AWACConfig,
     ) -> Tuple["AWACTrainState", jnp.ndarray]:
         def get_actor_loss(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             dist = train_state.actor.apply_fn(actor_params, batch.observations)
@@ -233,12 +238,18 @@ class AWAC(object):
         return train_state._replace(actor=new_actor), actor_loss
 
     def update_critic(
-        self, train_state: AWACTrainState, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
+        self,
+        train_state: AWACTrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: AWACConfig,
     ) -> Tuple["AWACTrainState", jnp.ndarray]:
         def get_critic_loss(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
-            dist = train_state.actor.apply_fn(train_state.actor.params, batch.observations)
+            dist = train_state.actor.apply_fn(
+                train_state.actor.params, batch.observations
+            )
             next_actions = dist.sample(seed=rng)
             n_q_1, n_q_2 = train_state.target_critic.apply_fn(
                 train_state.target_critic.params, batch.next_observations, next_actions
@@ -254,7 +265,9 @@ class AWAC(object):
             loss = jnp.mean((q_1 - q_target) ** 2 + (q_2 - q_target) ** 2)
             return loss
 
-        new_critic, critic_loss = update_by_loss_grad(train_state.critic, get_critic_loss)
+        new_critic, critic_loss = update_by_loss_grad(
+            train_state.critic, get_critic_loss
+        )
         return train_state._replace(critic=new_critic), critic_loss
 
     @partial(jax.jit, static_argnums=(0, 4))
@@ -272,13 +285,17 @@ class AWAC(object):
             )
             batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
 
-            train_state, critic_loss = self.update_critic(train_state, batch, critic_rng, config)
+            train_state, critic_loss = self.update_critic(
+                train_state, batch, critic_rng, config
+            )
             new_target_critic = target_update(
                 train_state.critic,
                 train_state.target_critic,
                 config.tau,
             )
-            train_state, actor_loss = self.update_actor(train_state, batch, actor_rng, config)
+            train_state, actor_loss = self.update_actor(
+                train_state, batch, actor_rng, config
+            )
         return train_state._replace(target_critic=new_target_critic), {
             "critic_loss": critic_loss,
             "actor_loss": actor_loss,
@@ -387,7 +404,10 @@ if __name__ == "__main__":
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
-                algo.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0), train_state=train_state
+                algo.sample_actions,
+                temperature=0.0,
+                seed=jax.random.PRNGKey(0),
+                train_state=train_state,
             )
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean, obs_std
@@ -397,7 +417,10 @@ if __name__ == "__main__":
             wandb.log(eval_metrics, step=i)
     # final evaluation
     policy_fn = partial(
-        algo.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0), train_state=train_state
+        algo.sample_actions,
+        temperature=0.0,
+        seed=jax.random.PRNGKey(0),
+        train_state=train_state,
     )
     normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
     print("Final evaluation score", normalized_score)
