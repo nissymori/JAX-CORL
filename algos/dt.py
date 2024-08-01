@@ -375,12 +375,12 @@ def sample_traj_batch(
 
 
 class DTTrainState(NamedTuple):
-    train_state: TrainState
+    transformer: TrainState
 
 
 class DT(object):
 
-    @jax.jit
+    @partial(jax.jit, static_argnums=(0))
     def update(
         self, train_state: DTTrainState, batch: Trajectory, rng: jax.random.PRNGKey
     ) -> Tuple[Any, jnp.ndarray]:
@@ -393,7 +393,7 @@ class DT(object):
         )
 
         def loss_fn(params):
-            state_preds, action_preds, return_preds = train_state.train_state.apply_fn(
+            state_preds, action_preds, return_preds = train_state.transformer.apply_fn(
                 params, timesteps, states, actions, returns_to_go, rngs={"dropout": rng}
             )  # B x T x state_dim, B x T x act_dim, B x T x 1
             # mask actions
@@ -404,12 +404,12 @@ class DT(object):
             return action_loss
 
         grad_fn = jax.value_and_grad(loss_fn)
-        loss, grad = grad_fn(train_state.train_state.params)
+        loss, grad = grad_fn(train_state.transformer.params)
         # Apply gradient clipping
-        train_state = train_state.train_state.apply_gradients(grads=grad)
-        return train_state._replace(train_state=train_state), loss
+        transformer = train_state.transformer.apply_gradients(grads=grad)
+        return train_state._replace(transformer=transformer), loss
 
-    @jax.jit
+    @partial(jax.jit, static_argnums=(0))
     def get_action(
         self,
         train_state: DTTrainState,
@@ -418,8 +418,8 @@ class DT(object):
         actions: jnp.ndarray,
         returns_to_go: jnp.ndarray,
     ) -> jnp.ndarray:
-        state_preds, action_preds, return_preds = train_state.train_state.apply_fn(
-            train_state.train_state.params,
+        state_preds, action_preds, return_preds = train_state.transformer.apply_fn(
+            train_state.transformer.params,
             timesteps,
             states,
             actions,
@@ -567,7 +567,7 @@ if __name__ == "__main__":
 
         if i % config.eval_interval == 0:
             # evaluate on env
-            normalized_score = evaluate(train_state, env, config, state_mean, state_std)
+            normalized_score = evaluate(algo.get_action, train_state, env, config, state_mean, state_std)
             print(i, normalized_score)
             wandb.log(
                 {
