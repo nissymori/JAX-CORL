@@ -195,27 +195,29 @@ def update_by_loss_grad(
     return new_train_state, loss
 
 
-class AWACTrainer(NamedTuple):
+class AWACTrainState(NamedTuple):
     rng: jax.random.PRNGKey
     critic: TrainState
     target_critic: TrainState
     actor: TrainState
 
+
+class AWAC(object):
     def update_actor(
-        agent, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
-    ) -> Tuple["AWACTrainer", jnp.ndarray]:
+        self, train_state: AWACTrainState, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
+    ) -> Tuple["AWACTrainState", jnp.ndarray]:
         def get_actor_loss(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            dist = agent.actor.apply_fn(actor_params, batch.observations)
+            dist = train_state.actor.apply_fn(actor_params, batch.observations)
             pi_actions = dist.sample(seed=rng)
-            q_1, q_2 = agent.critic.apply_fn(
-                agent.critic.params, batch.observations, pi_actions
+            q_1, q_2 = train_state.critic.apply_fn(
+                train_state.critic.params, batch.observations, pi_actions
             )
             v = jnp.minimum(q_1, q_2)
 
             lim = 1 - 1e-5
             actions = jnp.clip(batch.actions, -lim, lim)
-            q_1, q_2 = agent.critic.apply_fn(
-                agent.critic.params, batch.observations, actions
+            q_1, q_2 = train_state.critic.apply_fn(
+                train_state.critic.params, batch.observations, actions
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
@@ -227,41 +229,42 @@ class AWACTrainer(NamedTuple):
             loss = -jnp.mean(log_prob * weights).mean()
             return loss
 
-        new_actor, actor_loss = update_by_loss_grad(agent.actor, get_actor_loss)
-        return agent._replace(actor=new_actor), actor_loss
+        new_actor, actor_loss = update_by_loss_grad(train_state.actor, get_actor_loss)
+        return train_state._replace(actor=new_actor), actor_loss
 
     def update_critic(
-        agent, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
-    ) -> Tuple["AWACTrainer", jnp.ndarray]:
+        self, train_state: AWACTrainState, batch: Transition, rng: jax.random.PRNGKey, config: AWACConfig
+    ) -> Tuple["AWACTrainState", jnp.ndarray]:
         def get_critic_loss(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
-            dist = agent.actor.apply_fn(agent.actor.params, batch.observations)
+            dist = train_state.actor.apply_fn(train_state.actor.params, batch.observations)
             next_actions = dist.sample(seed=rng)
-            n_q_1, n_q_2 = agent.target_critic.apply_fn(
-                agent.target_critic.params, batch.next_observations, next_actions
+            n_q_1, n_q_2 = train_state.target_critic.apply_fn(
+                train_state.target_critic.params, batch.next_observations, next_actions
             )
             next_q = jnp.minimum(n_q_1, n_q_2)
             q_target = batch.rewards + config.discount * (1 - batch.dones) * next_q
             q_target = jax.lax.stop_gradient(q_target)
 
-            q_1, q_2 = agent.critic.apply_fn(
+            q_1, q_2 = train_state.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
 
             loss = jnp.mean((q_1 - q_target) ** 2 + (q_2 - q_target) ** 2)
             return loss
 
-        new_critic, critic_loss = update_by_loss_grad(agent.critic, get_critic_loss)
-        return agent._replace(critic=new_critic), critic_loss
+        new_critic, critic_loss = update_by_loss_grad(train_state.critic, get_critic_loss)
+        return train_state._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(3,))
+    @partial(jax.jit, static_argnums=(0, 4))
     def update_n_times(
-        agent,
+        self,
+        train_state: AWACTrainState,
         dataset: Transition,
         rng: jax.random.PRNGKey,
         config: AWACConfig,
-    ) -> Tuple["AWACTrainer", Dict]:
+    ) -> Tuple["AWACTrainState", Dict]:
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
             batch_indices = jax.random.randint(
@@ -269,28 +272,29 @@ class AWACTrainer(NamedTuple):
             )
             batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
 
-            agent, critic_loss = agent.update_critic(batch, critic_rng, config)
+            train_state, critic_loss = self.update_critic(train_state, batch, critic_rng, config)
             new_target_critic = target_update(
-                agent.critic,
-                agent.target_critic,
+                train_state.critic,
+                train_state.target_critic,
                 config.tau,
             )
-            agent, actor_loss = agent.update_actor(batch, actor_rng, config)
-        return agent._replace(target_critic=new_target_critic), {
+            train_state, actor_loss = self.update_actor(train_state, batch, actor_rng, config)
+        return train_state._replace(target_critic=new_target_critic), {
             "critic_loss": critic_loss,
             "actor_loss": actor_loss,
         }
 
-    @jax.jit
+    @partial(jax.jit, static_argnums=(0,))
     def sample_actions(
-        agent,
+        self,
+        train_state: AWACTrainState,
         observations: np.ndarray,
         seed: jax.random.PRNGKey,
         temperature: float = 1.0,
         max_action: float = 1.0,  # In D4RL envs, the action space is [-1, 1]
     ) -> jnp.ndarray:
-        actions = agent.actor.apply_fn(
-            agent.actor.params, observations, temperature=temperature
+        actions = train_state.actor.apply_fn(
+            train_state.actor.params, observations=observations, temperature=temperature
         ).sample(seed=seed)
         actions = jnp.clip(actions, -max_action, max_action)
         return actions
@@ -298,7 +302,7 @@ class AWACTrainer(NamedTuple):
 
 def create_trainer(
     observations: jnp.ndarray, actions: jnp.ndarray, config: AWACConfig
-) -> AWACTrainer:
+) -> AWACTrainState:
     rng = jax.random.PRNGKey(config.seed)
     rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
@@ -325,7 +329,7 @@ def create_trainer(
         params=critic_model.init(critic_rng, observations, actions),
         tx=optax.adam(learning_rate=config.critic_lr),
     )
-    return AWACTrainer(
+    return AWACTrainState(
         rng,
         critic=critic,
         target_critic=target_critic,
@@ -346,7 +350,7 @@ def evaluate(
         observation, done = env.reset(), False
         while not done:
             observation = (observation - obs_mean) / obs_std
-            action = policy_fn(observation)
+            action = policy_fn(observations=observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
         episode_returns.append(episode_return)
@@ -358,19 +362,21 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
-    # create agent
+    # create train_state
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    agent: AWACTrainer = create_trainer(
+    train_state: AWACTrainState = create_trainer(
         example_batch.observations,
         example_batch.actions,
         config,
     )
+    algo = AWAC()
 
     num_steps = config.max_steps // config.n_jitted_updates
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        agent, update_info = agent.update_n_times(
+        train_state, update_info = algo.update_n_times(
+            train_state,
             dataset,
             subkey,
             config,
@@ -381,7 +387,7 @@ if __name__ == "__main__":
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
-                agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
+                algo.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0), train_state=train_state
             )
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean, obs_std
@@ -391,7 +397,7 @@ if __name__ == "__main__":
             wandb.log(eval_metrics, step=i)
     # final evaluation
     policy_fn = partial(
-        agent.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0)
+        algo.sample_actions, temperature=0.0, seed=jax.random.PRNGKey(0), train_state=train_state
     )
     normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
     print("Final evaluation score", normalized_score)
