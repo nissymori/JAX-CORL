@@ -19,6 +19,7 @@ import wandb
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
@@ -83,14 +84,20 @@ class TD7Actor(nn.Module):
     action_dim: int
     hidden_dim: int = 256
     activation: Callable = nn.relu
-    kernel_init: Callable = default_init() #clip_uniform_initializers(-0.03, 0.03)
+    kernel_init: Callable = default_init()  # clip_uniform_initializers(-0.03, 0.03)
 
     @nn.compact
     def __call__(self, state: jnp.ndarray, zs: jnp.ndarray) -> jnp.ndarray:
-        action = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(state))
+        action = AvgL1Norm(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(state)
+        )
         action = jnp.concatenate([action, zs], axis=-1)
-        action = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action))
-        action = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action))
+        action = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action)
+        )
+        action = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(action)
+        )
         return nn.tanh(nn.Dense(self.action_dim, kernel_init=self.kernel_init)(action))
 
 
@@ -154,7 +161,7 @@ class Critic(nn.Module):
     zs_dim: int = 256
     hidden_dim: int = 256
     activation: Callable = nn.elu
-    kernel_init: Callable = default_init() #clip_uniform_initializers(-0.03, 0.03)
+    kernel_init: Callable = default_init()  # clip_uniform_initializers(-0.03, 0.03)
 
     @nn.compact
     def __call__(
@@ -165,14 +172,22 @@ class Critic(nn.Module):
 
         q1 = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(sa))
         q1 = jnp.concatenate([q1, embeddings], axis=-1)
-        q1 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1))
-        q1 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1))
+        q1 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1)
+        )
+        q1 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q1)
+        )
         q1 = nn.Dense(1, kernel_init=self.kernel_init)(q1)
 
         q2 = AvgL1Norm(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(sa))
         q2 = jnp.concatenate([q2, embeddings], axis=-1)
-        q2 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2))
-        q2 = self.activation(nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2))
+        q2 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2)
+        )
+        q2 = self.activation(
+            nn.Dense(self.hidden_dim, kernel_init=self.kernel_init)(q2)
+        )
         q2 = nn.Dense(1, kernel_init=self.kernel_init)(q2)
         return jnp.concatenate([q1, q2], axis=-1)
 
@@ -259,7 +274,7 @@ def update_by_loss_grad(
         return new_train_state, loss
 
 
-class TD7Trainer(NamedTuple):
+class TD7TrainState(NamedTuple):
     actor: TrainState
     critic: TrainState
     encoder: TrainState
@@ -274,21 +289,24 @@ class TD7Trainer(NamedTuple):
     min_: float = 1e8
     max_priority: float = 1.0
 
+
+class TD7(object):
+
     def update_encoder(
-        agent, batch: Transition, config: TD7Config
-    ) -> Tuple["TD7Trainer", jnp.ndarray]:
+        self, train_state: TD7TrainState, batch: Transition, config: TD7Config
+    ) -> Tuple["TD7TrainState", jnp.ndarray]:
         def encoder_loss_fn(
             encoder_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
-            next_zs = agent.encoder.apply_fn(
+            next_zs = train_state.encoder.apply_fn(
                 encoder_params, batch.next_observations, method=Encoder.encoder
             )
             next_zs = jax.lax.stop_gradient(next_zs)
 
-            zs = agent.encoder.apply_fn(
+            zs = train_state.encoder.apply_fn(
                 encoder_params, batch.observations, method=Encoder.encoder
             )
-            pred_zs = agent.encoder.apply_fn(
+            pred_zs = train_state.encoder.apply_fn(
                 encoder_params,
                 zs,
                 batch.actions,
@@ -297,27 +315,39 @@ class TD7Trainer(NamedTuple):
             encoder_loss = jnp.square(next_zs - pred_zs).mean()
             return encoder_loss
 
-        new_encoder, encoder_loss = update_by_loss_grad(agent.encoder, encoder_loss_fn)
-        return agent._replace(encoder=new_encoder), encoder_loss
+        new_encoder, encoder_loss = update_by_loss_grad(
+            train_state.encoder, encoder_loss_fn
+        )
+        return train_state._replace(encoder=new_encoder), encoder_loss
 
     def update_actor(
-        agent, batch: Transition, rng: jax.random.PRNGKey, config: TD7Config
-    ) -> Tuple["TD7Trainer", jnp.ndarray]:
+        self,
+        train_state: TD7TrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: TD7Config,
+    ) -> Tuple["TD7TrainState", jnp.ndarray]:
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            fixed_zs = agent.fixed_encoder.apply_fn(
-                agent.fixed_encoder.params,
+            fixed_zs = train_state.fixed_encoder.apply_fn(
+                train_state.fixed_encoder.params,
                 batch.observations,
                 method=Encoder.encoder,
             )
-            action = agent.actor.apply_fn(actor_params, batch.observations, fixed_zs)
-            fixed_zsa = agent.fixed_encoder.apply_fn(
-                agent.fixed_encoder.params,
+            action = train_state.actor.apply_fn(
+                actor_params, batch.observations, fixed_zs
+            )
+            fixed_zsa = train_state.fixed_encoder.apply_fn(
+                train_state.fixed_encoder.params,
                 fixed_zs,
                 action,
                 method=Encoder.action_encoder,
             )
-            q = agent.critic.apply_fn(
-                agent.critic.params, batch.observations, action, fixed_zs, fixed_zsa
+            q = train_state.critic.apply_fn(
+                train_state.critic.params,
+                batch.observations,
+                action,
+                fixed_zs,
+                fixed_zsa,
             )
 
             actor_loss = (
@@ -328,20 +358,24 @@ class TD7Trainer(NamedTuple):
             )
             return actor_loss
 
-        new_actor, actor_loss = update_by_loss_grad(agent.actor, actor_loss_fn)
-        return agent._replace(actor=new_actor), actor_loss
+        new_actor, actor_loss = update_by_loss_grad(train_state.actor, actor_loss_fn)
+        return train_state._replace(actor=new_actor), actor_loss
 
     def update_critic(
-        agent, batch: Transition, rng: jax.random.PRNGKey, config: TD7Config
-    ) -> Tuple["TD7Trainer", jnp.ndarray]:
+        self,
+        train_state: TD7TrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: TD7Config,
+    ) -> Tuple["TD7TrainState", jnp.ndarray]:
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
             #######################
             # No grad start
             #######################
-            fixed_target_zs = agent.fixed_target_encoder.apply_fn(
-                agent.fixed_target_encoder.params,
+            fixed_target_zs = train_state.fixed_target_encoder.apply_fn(
+                train_state.fixed_target_encoder.params,
                 batch.next_observations,
                 method=Encoder.encoder,
             )
@@ -350,20 +384,22 @@ class TD7Trainer(NamedTuple):
                 jax.random.normal(rng, batch.actions.shape) * config.policy_noise_std
             ).clip(-config.policy_noise_clip, config.policy_noise_clip)
             next_action = (
-                agent.target_actor.apply_fn(
-                    agent.target_actor.params, batch.next_observations, fixed_target_zs
+                train_state.target_actor.apply_fn(
+                    train_state.target_actor.params,
+                    batch.next_observations,
+                    fixed_target_zs,
                 )
                 + noise
-            ).clip(-agent.max_action, agent.max_action)
-            fixed_target_zsa = agent.fixed_target_encoder.apply_fn(
-                agent.fixed_target_encoder.params,
+            ).clip(-train_state.max_action, train_state.max_action)
+            fixed_target_zsa = train_state.fixed_target_encoder.apply_fn(
+                train_state.fixed_target_encoder.params,
                 fixed_target_zs,
                 next_action,
                 method=Encoder.action_encoder,
             )
 
-            target_q = agent.target_critic.apply_fn(
-                agent.target_critic.params,
+            target_q = train_state.target_critic.apply_fn(
+                train_state.target_critic.params,
                 batch.next_observations,
                 next_action,
                 fixed_target_zs,
@@ -372,11 +408,11 @@ class TD7Trainer(NamedTuple):
             target_q = target_q.min(axis=1, keepdims=True)[0]
             target_q = batch.rewards + config.discount * (
                 1.0 - batch.dones
-            ) * target_q.clip(min=agent.min_target, max=agent.max_target)
+            ) * target_q.clip(min=train_state.min_target, max=train_state.max_target)
             target_q = jax.lax.stop_gradient(target_q)[..., None]  # (batch_size, 1)
 
-            fixed_zs, fixed_zsa = agent.fixed_encoder.apply_fn(
-                agent.fixed_encoder.params, batch.observations, batch.actions
+            fixed_zs, fixed_zsa = train_state.fixed_encoder.apply_fn(
+                train_state.fixed_encoder.params, batch.observations, batch.actions
             )
             fized_zs = jax.lax.stop_gradient(fixed_zs)
             fixed_zsa = jax.lax.stop_gradient(fixed_zsa)
@@ -384,7 +420,7 @@ class TD7Trainer(NamedTuple):
             # No grad end
             #######################
 
-            pred_q = agent.critic.apply_fn(
+            pred_q = train_state.critic.apply_fn(
                 critic_params, batch.observations, batch.actions, fixed_zs, fixed_zsa
             )
             td_loss = jnp.abs(target_q - pred_q)  # (batch_size, 2)
@@ -392,12 +428,13 @@ class TD7Trainer(NamedTuple):
             return critic_loss, (td_loss, target_q)
 
         new_critic, critic_loss, (td_loss, target_q) = update_by_loss_grad(
-            agent.critic, critic_loss_fn, has_aux=True
+            train_state.critic, critic_loss_fn, has_aux=True
         )
-        return agent._replace(critic=new_critic), (critic_loss, td_loss, target_q)
+        return train_state._replace(critic=new_critic), (critic_loss, td_loss, target_q)
 
     def update_lap(
-        agent,
+        self,
+        train_state: TD7TrainState,
         dataset: Transition,
         indices: jnp.ndarray,
         td_loss: jnp.ndarray,
@@ -410,18 +447,19 @@ class TD7Trainer(NamedTuple):
             td_loss.max(axis=1)[0].clip(config.min_priority), config.alpha
         )
         new_priority = dataset.priorities.at[indices].set(priority)
-        max_priority = jnp.maximum(jnp.max(new_priority), agent.max_priority)
-        return agent._replace(max_priority=max_priority), dataset._replace(
+        max_priority = jnp.maximum(jnp.max(new_priority), train_state.max_priority)
+        return train_state._replace(max_priority=max_priority), dataset._replace(
             priorities=new_priority
         )
 
-    @partial(jax.jit, static_argnums=(3,))
+    @partial(jax.jit, static_argnums=(0, 4))
     def update_n_times(
-        agent,
+        self,
+        train_state: TD7TrainState,
         data: Transition,
         rng: jax.random.PRNGKey,
         config: TD7Config,
-    ) -> Tuple["TD7Trainer", Dict]:
+    ) -> Tuple["TD7TrainState", Dict]:
         for _ in range(
             config.n_jitted_updates
         ):  # we can jit for roop for static unroll
@@ -432,19 +470,25 @@ class TD7Trainer(NamedTuple):
             )
             # update networks
             rng, critic_rng, actor_rng = jax.random.split(rng, 3)
-            agent, encoder_loss = agent.update_encoder(batch, config)  # update encoder
-            agent, (critic_loss, td_loss, target_q) = agent.update_critic(
-                batch, critic_rng, config
+            train_state, encoder_loss = self.update_encoder(
+                train_state, batch, config
+            )  # update encoder
+            train_state, (critic_loss, td_loss, target_q) = self.update_critic(
+                train_state, batch, critic_rng, config
             )  # update critic
-            agent = agent._replace(
-                max_=jnp.maximum(agent.max_, target_q.max()),
-                min_=jnp.minimum(agent.min_, target_q.min()),
+            train_state = train_state._replace(
+                max_=jnp.maximum(train_state.max_, target_q.max()),
+                min_=jnp.minimum(train_state.min_, target_q.min()),
             )  # update max and min target
-            agent, data = agent.update_lap(data, indices, td_loss, config)  # update LAP
+            train_state, data = self.update_lap(
+                train_state, data, indices, td_loss, config
+            )  # update LAP
             if _ % config.policy_freq == 0:  # update actor
-                agent, actor_loss = agent.update_actor(batch, actor_rng, config)
+                train_state, actor_loss = self.update_actor(
+                    train_state, batch, actor_rng, config
+                )
         return (
-            agent,
+            train_state,
             data,
             {
                 "encoder_loss": encoder_loss,
@@ -453,23 +497,24 @@ class TD7Trainer(NamedTuple):
             },
         )
 
-    @jax.jit
+    @partial(jax.jit, static_argnums=(0))
     def get_actions(
-        agent,
+        self,
+        train_state,
         obs: jnp.ndarray,
         max_action: float = 1.0,  # In D4RL, action is scaled to [-1, 1]
     ) -> jnp.ndarray:
-        zs = agent.fixed_encoder.apply_fn(
-            agent.fixed_encoder.params, obs, method=Encoder.encoder
+        zs = train_state.fixed_encoder.apply_fn(
+            train_state.fixed_encoder.params, obs, method=Encoder.encoder
         )
-        action = agent.actor.apply_fn(agent.actor.params, obs, zs)
+        action = train_state.actor.apply_fn(train_state.actor.params, obs, zs)
         action = action.clip(-max_action, max_action)
         return action
 
 
 def create_trainer(
     observations: jnp.ndarray, actions: jnp.ndarray, config: TD7Config
-) -> TD7Trainer:
+) -> TD7TrainState:
     rng = jax.random.PRNGKey(config.seed)
     action_dim = actions.shape[-1]
     critic_model = Critic(
@@ -526,7 +571,7 @@ def create_trainer(
         params=encoder_model.init(encoder_rng, observations, actions),
         tx=optax.adam(config.encoder_lr),
     )
-    return TD7Trainer(
+    return TD7TrainState(
         actor=actor_train_state,
         critic=critic_train_state,
         target_actor=target_actor_train_state,
@@ -550,7 +595,7 @@ def evaluate(
         observation, done = env.reset(), False
         while not done:
             observation = (observation - obs_mean) / obs_std
-            action = policy_fn(observation)
+            action = policy_fn(obs=observation)
             observation, reward, done, info = env.step(action)
             episode_return += reward
         episode_returns.append(episode_return)
@@ -562,29 +607,34 @@ if __name__ == "__main__":
     env = gym.make(config.env_name)
     rng = jax.random.PRNGKey(config.seed)
     dataset, obs_mean, obs_std = get_dataset(env, config)
-    # create agent
+    # create train_state
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    agent = create_trainer(example_batch.observations, example_batch.actions, config)
+    train_state = create_trainer(
+        example_batch.observations, example_batch.actions, config
+    )
+
+    algo = TD7()
 
     num_steps = config.max_steps // config.n_jitted_updates
     assert config.target_update_rate % config.n_jitted_updates == 0
     target_update_rate = config.target_update_rate // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, update_rng = jax.random.split(rng)
-        agent, dataset, update_info = agent.update_n_times(
+        train_state, dataset, update_info = algo.update_n_times(
+            train_state,
             dataset,
             update_rng,
             config,
         )  # update parameters
         if i % target_update_rate == 0:  # update target networks
-            agent = agent._replace(
-                target_critic=agent.critic,
-                target_actor=agent.actor,
-                fixed_encoder=agent.encoder,
-                fixed_target_encoder=agent.fixed_encoder,
+            train_state = train_state._replace(
+                target_critic=train_state.critic,
+                target_actor=train_state.actor,
+                fixed_encoder=train_state.encoder,
+                fixed_target_encoder=train_state.fixed_encoder,
                 max_priority=dataset.priorities.max(),
-                max_target=agent.max_,
-                min_target=agent.min_,
+                max_target=train_state.max_,
+                min_target=train_state.min_,
             )
 
         if i % config.log_interval == 0:
@@ -592,7 +642,7 @@ if __name__ == "__main__":
             wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
-            policy_fn = agent.get_actions
+            policy_fn = partial(algo.get_actions, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn,
                 env,
@@ -604,7 +654,7 @@ if __name__ == "__main__":
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
     # final evaluation
-    policy_fn = agent.get_actions
+    policy_fn = partial(algo.get_actions, train_state=train_state)
     normalized_score = evaluate(
         policy_fn,
         env,

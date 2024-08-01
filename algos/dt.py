@@ -1,7 +1,7 @@
 # source https://github.com/nikhilbarhate99/min-decision-transformer
 # https://arxiv.org/abs/2106.01345
-import os
 import collections
+import os
 from functools import partial
 from typing import Any, Callable, Dict, NamedTuple, Optional, Sequence, Tuple
 
@@ -18,6 +18,7 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 from tqdm import tqdm
+
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
@@ -373,12 +374,15 @@ def sample_traj_batch(
     )
 
 
-class DTTrainer(NamedTuple):
-    train_state: TrainState
+class DTTrainState(NamedTuple):
+    transformer: TrainState
 
-    @jax.jit
+
+class DT(object):
+
+    @partial(jax.jit, static_argnums=(0))
     def update(
-        agent, batch: Trajectory, rng: jax.random.PRNGKey
+        self, train_state: DTTrainState, batch: Trajectory, rng: jax.random.PRNGKey
     ) -> Tuple[Any, jnp.ndarray]:
         timesteps, states, actions, returns_to_go, traj_mask = (
             batch.timesteps,
@@ -389,7 +393,7 @@ class DTTrainer(NamedTuple):
         )
 
         def loss_fn(params):
-            state_preds, action_preds, return_preds = agent.train_state.apply_fn(
+            state_preds, action_preds, return_preds = train_state.transformer.apply_fn(
                 params, timesteps, states, actions, returns_to_go, rngs={"dropout": rng}
             )  # B x T x state_dim, B x T x act_dim, B x T x 1
             # mask actions
@@ -400,21 +404,22 @@ class DTTrainer(NamedTuple):
             return action_loss
 
         grad_fn = jax.value_and_grad(loss_fn)
-        loss, grad = grad_fn(agent.train_state.params)
+        loss, grad = grad_fn(train_state.transformer.params)
         # Apply gradient clipping
-        train_state = agent.train_state.apply_gradients(grads=grad)
-        return agent._replace(train_state=train_state), loss
+        transformer = train_state.transformer.apply_gradients(grads=grad)
+        return train_state._replace(transformer=transformer), loss
 
-    @jax.jit
+    @partial(jax.jit, static_argnums=(0))
     def get_action(
-        agent,
+        self,
+        train_state: DTTrainState,
         timesteps: jnp.ndarray,
         states: jnp.ndarray,
         actions: jnp.ndarray,
         returns_to_go: jnp.ndarray,
     ) -> jnp.ndarray:
-        state_preds, action_preds, return_preds = agent.train_state.apply_fn(
-            agent.train_state.params,
+        state_preds, action_preds, return_preds = train_state.transformer.apply_fn(
+            train_state.transformer.params,
             timesteps,
             states,
             actions,
@@ -424,7 +429,7 @@ class DTTrainer(NamedTuple):
         return action_preds
 
 
-def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainer:
+def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainState:
     model = DecisionTransformer(
         state_dim=state_dim,
         act_dim=act_dim,
@@ -460,11 +465,12 @@ def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainer:
         ),
     )
     train_state = TrainState.create(apply_fn=model.apply, params=params, tx=tx)
-    return DTTrainer(train_state)
+    return DTTrainState(train_state)
 
 
 def evaluate(
-    agent: DTTrainer,
+    policy_fn: Callable,
+    train_state: DTTrainState,
     env: gym.Env,
     config: DTConfig,
     state_mean=0,
@@ -503,7 +509,8 @@ def evaluate(
             running_rtg = running_rtg - (running_reward / config.rtg_scale)
             rewards_to_go = rewards_to_go.at[0, t].set(running_rtg)
             if t < config.context_len:
-                act_preds = agent.get_action(
+                act_preds = policy_fn(
+                    train_state,
                     timesteps[:, : t + 1],
                     states[:, : t + 1],
                     actions[:, : t + 1],
@@ -511,7 +518,8 @@ def evaluate(
                 )
                 act = act_preds[0, -1]
             else:
-                act_preds = agent.get_action(
+                act_preds = policy_fn(
+                    train_state,
                     timesteps[:, t - config.context_len + 1 : t + 1],
                     states[:, t - config.context_len + 1 : t + 1],
                     actions[:, t - config.context_len + 1 : t + 1],
@@ -540,7 +548,9 @@ if __name__ == "__main__":
         make_padded_trajectories(config)
     )
     # create trainer
-    agent = create_trainer(state_dim, act_dim, config)
+    train_state = create_trainer(state_dim, act_dim, config)
+
+    algo = DT()
     for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
@@ -551,11 +561,13 @@ if __name__ == "__main__":
             episode_num,
             traj_lengths,
         )  # B x T x D
-        agent, action_loss = agent.update(traj_batch, update_rng)  # update parameters
+        train_state, action_loss = algo.update(
+            train_state, traj_batch, update_rng
+        )  # update parameters
 
         if i % config.eval_interval == 0:
             # evaluate on env
-            normalized_score = evaluate(agent, env, config, state_mean, state_std)
+            normalized_score = evaluate(algo.get_action, train_state, env, config, state_mean, state_std)
             print(i, normalized_score)
             wandb.log(
                 {
@@ -565,6 +577,8 @@ if __name__ == "__main__":
                 }
             )
     # final evaluation
-    normalized_score = evaluate(agent, env, config, state_mean, state_std)
+    normalized_score = evaluate(
+        algo.get_action, train_state, env, config, state_mean, state_std
+    )
     wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
     wandb.finish()
