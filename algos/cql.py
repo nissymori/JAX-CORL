@@ -707,7 +707,7 @@ class CQLTrainer(object):
         return new_train_states, new_target_qf_params, metrics
 
     @partial(jax.jit, static_argnames=("self",))
-    def get_actions(self, train_states, obs):
+    def get_action(self, train_states, obs):
         action, _ = self.policy.apply(
             train_states["policy"].params,
             obs.reshape(1, -1),
@@ -793,7 +793,7 @@ if __name__ == "__main__":
         metrics.update(metrics)
 
         if i == 0 or (i + 1) % config.eval_interval == 0:
-            policy_fn = partial(sac.get_actions, train_states=train_states)
+            policy_fn = partial(sac.get_action, train_states=train_states)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
             )
@@ -802,7 +802,7 @@ if __name__ == "__main__":
         wandb.log(metrics)
 
     # final evaluation
-    policy_fn = partial(sac.get_actions, train_states=train_states)
+    policy_fn = partial(sac.get_action, train_states=train_states)
     normalized_score = evaluate(
         policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
     )

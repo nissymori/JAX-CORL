@@ -498,7 +498,7 @@ class TD7(object):
         )
 
     @partial(jax.jit, static_argnums=(0))
-    def get_actions(
+    def get_action(
         self,
         train_state,
         obs: jnp.ndarray,
@@ -642,7 +642,7 @@ if __name__ == "__main__":
             wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
-            policy_fn = partial(algo.get_actions, train_state=train_state)
+            policy_fn = partial(algo.get_action, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn,
                 env,
@@ -654,7 +654,7 @@ if __name__ == "__main__":
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
     # final evaluation
-    policy_fn = partial(algo.get_actions, train_state=train_state)
+    policy_fn = partial(algo.get_action, train_state=train_state)
     normalized_score = evaluate(
         policy_fn,
         env,

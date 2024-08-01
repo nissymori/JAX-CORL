@@ -309,7 +309,7 @@ class IQL(object):
         }
 
     @partial(jax.jit, static_argnums=(0))
-    def sample_actions(
+    def get_action(
         self,
         train_state: IQLTrainState,
         observations: np.ndarray,
@@ -432,7 +432,7 @@ if __name__ == "__main__":
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
-                algo.sample_actions,
+                algo.get_action,
                 temperature=0.0,
                 seed=jax.random.PRNGKey(0),
                 train_state=train_state,
@@ -449,7 +449,7 @@ if __name__ == "__main__":
             wandb.log(eval_metrics, step=i)
     # final evaluation
     policy_fn = partial(
-        algo.sample_actions,
+        algo.get_action,
         temperature=0.0,
         seed=jax.random.PRNGKey(0),
         train_state=train_state,
