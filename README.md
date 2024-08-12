@@ -83,7 +83,7 @@ class Algo(object):
 
 def create_train_state(...):
     # initialize models...
-    return Trainer(
+    return AlgoTrainState(
         acotor=actor,
         critic=critic,
     )
