@@ -512,7 +512,7 @@ class TD7(object):
         return action
 
 
-def create_trainer(
+def create_train_state(
     observations: jnp.ndarray, actions: jnp.ndarray, config: TD7Config
 ) -> TD7TrainState:
     rng = jax.random.PRNGKey(config.seed)
@@ -609,7 +609,7 @@ if __name__ == "__main__":
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create train_state
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_trainer(
+    train_state = create_train_state(
         example_batch.observations, example_batch.actions, config
     )
 
