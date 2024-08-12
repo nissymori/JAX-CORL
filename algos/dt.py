@@ -429,7 +429,7 @@ class DT(object):
         return action_preds
 
 
-def create_trainer(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainState:
+def create_train_state(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainState:
     model = DecisionTransformer(
         state_dim=state_dim,
         act_dim=act_dim,
@@ -548,7 +548,7 @@ if __name__ == "__main__":
         make_padded_trajectories(config)
     )
     # create trainer
-    train_state = create_trainer(state_dim, act_dim, config)
+    train_state = create_train_state(state_dim, act_dim, config)
 
     algo = DT()
     for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):
