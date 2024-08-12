@@ -59,36 +59,36 @@ The code includes a `Transition` class, defined as a `NamedTuple`, which contain
 
 ##### Trainer class
 ```py
-class Trainer(NamedTuple):
+class AlgoTrainState(NamedTuple):
     actor: TrainState
     critic: TrainState
-    # hyper parameter
-    discount: float = 0.99
+
+class Algo(object):
     ...
-    def update_actor(agent, batch: Transition):
+    def update_actor(agent, batch: Transition, config):
         ...
         return agent
 
-    def update_critic(agent, batch: Transition):
+    def update_critic(agent, batch: Transition, config):
         ...
         return agent
 
     @partial(jax.jit, static_argnames("n_jitted_updates")
-    def update_n_times(agent, data, n_jitted_updates)
+    def update_n_times(agent, data, n_jitted_updates, config)
       for _ in range(n_updates):
         batch = data.sample()
-        agent = update_actor(batch)
-        agent = update_critic(batch)
+        agent = update_actor(batch, config)
+        agent = update_critic(batch, config)
       return agent
 
-def create_trainer(...):
+def create_train_state(...):
     # initialize models...
     return Trainer(
         acotor=actor,
         critic=critic,
     )
 ```
-For all algorithms, we have `Trainer` class (e.g. `TD3BCTrainer` for TD3+BC) which encompasses all necessary components for the algorithm: models, hyperparameters, and update logics. The Trainer class is versatile and can be used outside of the provided files if the create_trainer function is properly implemented to meet the necessary specifications for the Trainer class.
+For all algorithms, we have `TrainState` class (e.g. `TD3BCTrainState` for TD3+BC) which encompasses all `flax` trainstate for models. Update logic is implemented as the method of `Algo` classes (e.g. TD3BC) Both `TrainState` and `Algo` classes are versatile and can be used outside of the provided files if the `create_train_state` function is properly implemented to meet the necessary specifications for the `TrainState` class.
 **Note**: So far, we have not followed the policy for CQL due to technical issues. This will be handled in the near future.
 
 # See also
