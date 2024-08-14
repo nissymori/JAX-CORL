@@ -1,16 +1,19 @@
-cython==0.29.30
-mujoco-py==2.1.2.14
-wandb==0.16.3
-pydantic==2.6.1
-omegaconf==2.3.0
+jax[cuda12_pip] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+numpy
+pydantic
+omegaconf
+flax
+optax
+black
+isort
+mypy
+flake8
+wandb
+tqdm
 git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl
 gym==0.23.1
-tqdm==4.66.2
+cython==0.29.22
+mujoco-py==2.1.2.14
+distrax
 
-numpy==1.26.4
-jax[cuda11_cudnn82]==0.4.8
-jaxlib==0.4.7+cuda11.cudnn82
-distrax==0.1.5
-flax==0.7.4
-optax==0.1.9
 
