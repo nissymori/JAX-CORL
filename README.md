@@ -65,23 +65,23 @@ class AlgoTrainState(NamedTuple):
 
 class Algo(object):
     ...
-    def update_actor(agent, batch: Transition, config):
+    def update_actor(self, train_state: AlgoTrainState, batch: Transition, config) -> AlgoTrainState:
         ...
-        return agent
+        return train_state
 
-    def update_critic(agent, batch: Transition, config):
+    def update_critic(self, train_state: AlgoTrainState, batch: Transition, config) -> AlgoTrainState:
         ...
-        return agent
+        return train_state
 
     @partial(jax.jit, static_argnames("n_jitted_updates")
-    def update_n_times(agent, data, n_jitted_updates, config)
+    def update_n_times(self, train_state: AlgoTrainState,  data, n_jitted_updates, config) -> AlgoTrainState:
       for _ in range(n_updates):
         batch = data.sample()
-        agent = update_actor(batch, config)
-        agent = update_critic(batch, config)
-      return agent
+        train_state = self.update_actor(train_state, batch, config)
+        agent = self.update_critic(train_state, batch, config)
+      return train_state
 
-def create_train_state(...):
+def create_train_state(...) -> AlgoTrainState:
     # initialize models...
     return AlgoTrainState(
         acotor=actor,
