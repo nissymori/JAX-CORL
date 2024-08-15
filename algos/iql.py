@@ -44,8 +44,12 @@ class IQLConfig(BaseModel):
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
     # IQL SPECIFIC
-    tau: float = 0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
-    beta: float = 3.0  # FYI: for Hopper-me, 6.0 produce better result. (antmaze: beta=10.0)
+    tau: float = (
+        0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
+    )
+    beta: float = (
+        3.0  # FYI: for Hopper-me, 6.0 produce better result. (antmaze: beta=10.0)
+    )
     tau: float = 0.005
     discount: float = 0.99
 

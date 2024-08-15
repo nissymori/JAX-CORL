@@ -38,6 +38,7 @@ class CQLConfig(BaseModel):
     eval_episodes: int = 5
     normalize_state: bool = False
     data_size: int = 1000000
+    action_dim: int = None
     # NETWORK
     hidden_dims: Tuple[int] = (256, 256)
     orthogonal_init: bool = False
@@ -212,7 +213,7 @@ class TanhGaussianPolicy(nn.Module):
 
     def setup(self) -> None:
         self.base_network = FullyConnectedNetwork(
-            output_dim=2 * self.action_dim,
+            output_dim=2 * config.action_dim,
             hidden_dims=self.hidden_dims,
             orthogonal_init=self.orthogonal_init,
         )
@@ -318,92 +319,70 @@ def collect_metrics(metrics, names, prefix=None):
     return collected
 
 
-class CQLTrainer(object):
+class CQLTrainState(NamedTuple):
+    policy: TrainState
+    qf1: TrainState
+    qf2: TrainState
+    log_alpha: TrainState
+    target_qf1_params: Any
+    target_qf2_params: Any
+    global_steps: int
 
-    def __init__(self, config, policy, qf, rng):
-        self.policy = policy
-        self.qf = qf
-        self.observation_dim = policy.observation_dim
-        self.action_dim = policy.action_dim
+    def train_params(self):
+        return {
+            "policy": self.policy.params,
+            "qf1": self.qf1.params,
+            "qf2": self.qf2.params,
+            "log_alpha": self.log_alpha.params,
+        }
 
-        self._train_states = {}
+    def target_params(self):
+        return {"qf1": self.target_qf1_params, "qf2": self.target_qf2_params}
 
-        optimizer_class = {
-            "adam": optax.adam,
-            "sgd": optax.sgd,
-        }[config.optimizer_type]
+    def model_keys(self):
+        return ("policy", "qf1", "qf2", "log_alpha")
 
-        rng, policy_rng, q1_rng, q2_rng = jax.random.split(rng, 4)
+    def to_dict(self):
+        return {
+            "policy": self.policy,
+            "qf1": self.qf1,
+            "qf2": self.qf2,
+            "log_alpha": self.log_alpha,
+        }
 
-        policy_params = self.policy.init(
-            policy_rng, jnp.zeros((10, self.observation_dim)), policy_rng
+    def update_from_dict(
+        self, new_states: Dict[str, TrainState], new_target_qf_params: Dict[str, Any]
+    ):
+        return self._replace(
+            policy=new_states["policy"],
+            qf1=new_states["qf1"],
+            qf2=new_states["qf2"],
+            log_alpha=new_states["log_alpha"],
+            target_qf1_params=new_target_qf_params["qf1"],
+            target_qf2_params=new_target_qf_params["qf2"],
         )
-        self._train_states["policy"] = TrainState.create(
-            params=policy_params, tx=optimizer_class(config.policy_lr), apply_fn=None
-        )
 
-        qf1_params = self.qf.init(
-            q1_rng,
-            jnp.zeros((10, self.observation_dim)),
-            jnp.zeros((10, self.action_dim)),
-        )
-        self._train_states["qf1"] = TrainState.create(
-            params=qf1_params,
-            tx=optimizer_class(config.qf_lr),
-            apply_fn=None,
-        )
-        qf2_params = self.qf.init(
-            q2_rng,
-            jnp.zeros((10, self.observation_dim)),
-            jnp.zeros((10, self.action_dim)),
-        )
-        self._train_states["qf2"] = TrainState.create(
-            params=qf2_params,
-            tx=optimizer_class(config.qf_lr),
-            apply_fn=None,
-        )
-        self._target_qf_params = deepcopy({"qf1": qf1_params, "qf2": qf2_params})
 
-        model_keys = ["policy", "qf1", "qf2"]
-
-        if config.use_automatic_entropy_tuning:
-            self.log_alpha = Scalar(0.0)
-            rng, log_alpha_rng = jax.random.split(rng)
-            self._train_states["log_alpha"] = TrainState.create(
-                params=self.log_alpha.init(log_alpha_rng),
-                tx=optimizer_class(config.policy_lr),
-                apply_fn=None,
-            )
-            model_keys.append("log_alpha")
-
-        if config.cql_lagrange:
-            self.log_alpha_prime = Scalar(1.0)
-            rng, log_alpha_prime_rng = jax.random.split(rng)
-            self._train_states["log_alpha_prime"] = TrainState.create(
-                params=self.log_alpha_prime.init(log_alpha_prime_rng),
-                tx=optimizer_class(config.qf_lr),
-                apply_fn=None,
-            )
-            model_keys.append("log_alpha_prime")
-
-        self._model_keys = tuple(model_keys)
+class CQL(object):
 
     @partial(jax.jit, static_argnames=("self", "config", "bc"))
-    def train(self, train_states, target_q_params, dataset, rng, config, bc=False):
+    def train(self, train_state: CQLTrainState, dataset, rng, config, bc=False):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, update_rng = jax.random.split(rng, 3)
             batch_indices = jax.random.randint(
                 batch_rng, (config.batch_size,), 0, len(dataset.observations)
             )
             batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
-            train_states, target_q_params, metrics = self._train_step(
-                train_states, target_q_params, update_rng, batch, config, bc
+            train_state, metrics = self._train_step(
+                train_state, update_rng, batch, config, bc
             )
-        return train_states, target_q_params, metrics
+        return train_state, metrics
 
-    def _train_step(
-        self, train_states, target_qf_params, _rng, batch, config, bc=False
-    ):
+    def _train_step(self, train_state: CQLTrainState, _rng, batch, config, bc=False):
+        policy_fn = train_state.policy.apply_fn
+        qf_fn = train_state.qf1.apply_fn
+        log_alpha_fn = train_state.log_alpha.apply_fn
+        target_qf_params = train_state.target_params()
 
         def loss_fn(train_params):
             observations = batch.observations
@@ -415,18 +394,18 @@ class CQLTrainer(object):
             loss_collection = {}
 
             rng, new_actions_rng = jax.random.split(_rng)
-            new_actions, log_pi = self.policy.apply(
+            new_actions, log_pi = policy_fn(
                 train_params["policy"], observations, new_actions_rng
             )
 
             if config.use_automatic_entropy_tuning:
                 alpha_loss = (
-                    -self.log_alpha.apply(train_params["log_alpha"])
+                    -log_alpha_fn(train_params["log_alpha"])
                     * (log_pi + config.target_entropy).mean()
                 )
                 loss_collection["log_alpha"] = alpha_loss
                 alpha = (
-                    jnp.exp(self.log_alpha.apply(train_params["log_alpha"]))
+                    jnp.exp(log_alpha_fn(train_params["log_alpha"]))
                     * config.alpha_multiplier
                 )
             else:
@@ -436,7 +415,7 @@ class CQLTrainer(object):
             """ Policy loss """
             if bc:
                 rng, bc_rng = jax.random.split(rng)
-                log_probs = self.policy.apply(
+                log_probs = policy_fn(
                     train_params["policy"],
                     observations,
                     actions,
@@ -446,32 +425,28 @@ class CQLTrainer(object):
                 policy_loss = (alpha * log_pi - log_probs).mean()
             else:
                 q_new_actions = jnp.minimum(
-                    self.qf.apply(train_params["qf1"], observations, new_actions),
-                    self.qf.apply(train_params["qf2"], observations, new_actions),
+                    qf_fn(train_params["qf1"], observations, new_actions),
+                    qf_fn(train_params["qf2"], observations, new_actions),
                 )
                 policy_loss = (alpha * log_pi - q_new_actions).mean()
 
             loss_collection["policy"] = policy_loss
 
             """ Q function loss """
-            q1_pred = self.qf.apply(train_params["qf1"], observations, actions)
-            q2_pred = self.qf.apply(train_params["qf2"], observations, actions)
+            q1_pred = qf_fn(train_params["qf1"], observations, actions)
+            q2_pred = qf_fn(train_params["qf2"], observations, actions)
 
             if config.cql_max_target_backup:
                 rng, cql_rng = jax.random.split(rng)
-                new_next_actions, next_log_pi = self.policy.apply(
+                new_next_actions, next_log_pi = policy_fn(
                     train_params["policy"],
                     next_observations,
                     cql_rng,
                     repeat=config.cql_n_actions,
                 )
                 target_q_values = jnp.minimum(
-                    self.qf.apply(
-                        target_qf_params["qf1"], next_observations, new_next_actions
-                    ),
-                    self.qf.apply(
-                        target_qf_params["qf2"], next_observations, new_next_actions
-                    ),
+                    qf_fn(target_qf_params["qf1"], next_observations, new_next_actions),
+                    qf_fn(target_qf_params["qf2"], next_observations, new_next_actions),
                 )
                 max_target_indices = jnp.expand_dims(
                     jnp.argmax(target_q_values, axis=-1), axis=-1
@@ -484,16 +459,12 @@ class CQLTrainer(object):
                 ).squeeze(-1)
             else:
                 rng, cql_rng = jax.random.split(rng)
-                new_next_actions, next_log_pi = self.policy.apply(
+                new_next_actions, next_log_pi = policy_fn(
                     train_params["policy"], next_observations, cql_rng
                 )
                 target_q_values = jnp.minimum(
-                    self.qf.apply(
-                        target_qf_params["qf1"], next_observations, new_next_actions
-                    ),
-                    self.qf.apply(
-                        target_qf_params["qf2"], next_observations, new_next_actions
-                    ),
+                    qf_fn(target_qf_params["qf1"], next_observations, new_next_actions),
+                    qf_fn(target_qf_params["qf2"], next_observations, new_next_actions),
                 )
 
             if config.backup_entropy:
@@ -511,41 +482,41 @@ class CQLTrainer(object):
                 rng, random_rng = jax.random.split(rng)
                 cql_random_actions = jax.random.uniform(
                     random_rng,
-                    shape=(batch_size, config.cql_n_actions, self.action_dim),
+                    shape=(batch_size, config.cql_n_actions, config.action_dim),
                     minval=-1.0,
                     maxval=1.0,
                 )
                 rng, current_rng = jax.random.split(rng)
-                cql_current_actions, cql_current_log_pis = self.policy.apply(
+                cql_current_actions, cql_current_log_pis = policy_fn(
                     train_params["policy"],
                     observations,
                     current_rng,
                     repeat=config.cql_n_actions,
                 )
                 rng, next_rng = jax.random.split(rng)
-                cql_next_actions, cql_next_log_pis = self.policy.apply(
+                cql_next_actions, cql_next_log_pis = policy_fn(
                     train_params["policy"],
                     next_observations,
                     next_rng,
                     repeat=config.cql_n_actions,
                 )
 
-                cql_q1_rand = self.qf.apply(
+                cql_q1_rand = qf_fn(
                     train_params["qf1"], observations, cql_random_actions
                 )
-                cql_q2_rand = self.qf.apply(
+                cql_q2_rand = qf_fn(
                     train_params["qf2"], observations, cql_random_actions
                 )
-                cql_q1_current_actions = self.qf.apply(
+                cql_q1_current_actions = qf_fn(
                     train_params["qf1"], observations, cql_current_actions
                 )
-                cql_q2_current_actions = self.qf.apply(
+                cql_q2_current_actions = qf_fn(
                     train_params["qf2"], observations, cql_current_actions
                 )
-                cql_q1_next_actions = self.qf.apply(
+                cql_q1_next_actions = qf_fn(
                     train_params["qf1"], observations, cql_next_actions
                 )
-                cql_q2_next_actions = self.qf.apply(
+                cql_q2_next_actions = qf_fn(
                     train_params["qf2"], observations, cql_next_actions
                 )
 
@@ -571,7 +542,7 @@ class CQLTrainer(object):
                 cql_std_q2 = jnp.std(cql_cat_q2, axis=1)
 
                 if config.cql_importance_sample:
-                    random_density = np.log(0.5**self.action_dim)
+                    random_density = np.log(0.5**config.action_dim)
                     cql_cat_q1 = jnp.concatenate(
                         [
                             cql_q1_rand - random_density,
@@ -610,50 +581,29 @@ class CQLTrainer(object):
                     config.cql_clip_diff_max,
                 ).mean()
 
-                if config.cql_lagrange:
-                    alpha_prime = jnp.clip(
-                        jnp.exp(
-                            self.log_alpha_prime.apply(train_params["log_alpha_prime"])
-                        ),
-                        a_min=0.0,
-                        a_max=1000000.0,
-                    )
-                    cql_min_qf1_loss = (
-                        alpha_prime
-                        * config.cql_min_q_weight
-                        * (cql_qf1_diff - config.cql_target_action_gap)
-                    )
-                    cql_min_qf2_loss = (
-                        alpha_prime
-                        * config.cql_min_q_weight
-                        * (cql_qf2_diff - config.cql_target_action_gap)
-                    )
-
-                    alpha_prime_loss = (-cql_min_qf1_loss - cql_min_qf2_loss) * 0.5
-
-                    loss_collection["log_alpha_prime"] = alpha_prime_loss
-
-                else:
-                    cql_min_qf1_loss = cql_qf1_diff * config.cql_min_q_weight
-                    cql_min_qf2_loss = cql_qf2_diff * config.cql_min_q_weight
-                    alpha_prime_loss = 0.0
-                    alpha_prime = 0.0
+                cql_min_qf1_loss = cql_qf1_diff * config.cql_min_q_weight
+                cql_min_qf2_loss = cql_qf2_diff * config.cql_min_q_weight
+                alpha_prime_loss = 0.0
+                alpha_prime = 0.0
 
                 qf1_loss = qf1_loss + cql_min_qf1_loss
                 qf2_loss = qf2_loss + cql_min_qf2_loss
 
             loss_collection["qf1"] = qf1_loss
             loss_collection["qf2"] = qf2_loss
-            return tuple(loss_collection[key] for key in self.model_keys), locals()
+            return (
+                tuple(loss_collection[key] for key in train_state.model_keys()),
+                locals(),
+            )
 
-        train_params = {key: train_states[key].params for key in self.model_keys}
+        train_params = train_state.train_params()
         (_, aux_values), grads = value_and_multi_grad(
-            loss_fn, len(self.model_keys), has_aux=True
+            loss_fn, len(train_params), has_aux=True
         )(train_params)
 
         new_train_states = {
-            key: train_states[key].apply_gradients(grads=grads[i][key])
-            for i, key in enumerate(self.model_keys)
+            key: train_state.to_dict()[key].apply_gradients(grads=grads[i][key])
+            for i, key in enumerate(train_state.model_keys())
         }
         new_target_qf_params = {}
         new_target_qf_params["qf1"] = update_target_network(
@@ -665,6 +615,9 @@ class CQLTrainer(object):
             new_train_states["qf2"].params,
             target_qf_params["qf2"],
             config.soft_target_update_rate,
+        )
+        train_state = train_state.update_from_dict(
+            new_train_states, new_target_qf_params
         )
 
         metrics = collect_metrics(
@@ -704,35 +657,23 @@ class CQLTrainer(object):
                 )
             )
 
-        return new_train_states, new_target_qf_params, metrics
+        return train_state, metrics
 
     @partial(jax.jit, static_argnames=("self",))
-    def get_action(self, train_states, obs):
-        action, _ = self.policy.apply(
-            train_states["policy"].params,
+    def get_action(self, train_state, obs):
+        action, _ = train_state.policy.apply_fn(
+            train_state.policy.params,
             obs.reshape(1, -1),
             jax.random.PRNGKey(0),
             deterministic=True,
         )
         return action.squeeze(0)
 
-    @property
-    def model_keys(self):
-        return self._model_keys
 
-    @property
-    def train_states(self):
-        return self._train_states
-
-    @property
-    def train_params(self):
-        return {key: self.train_states[key].params for key in self.model_keys}
-
-
-def create_trainer(
+def create_train_state(
     observations: jnp.ndarray, actions: jnp.ndarray, config: CQLConfig
-) -> CQLTrainer:
-    policy = TanhGaussianPolicy(
+) -> CQLTrainState:
+    policy_model = TanhGaussianPolicy(
         observation_dim=observations.shape[-1],
         action_dim=actions.shape[-1],
         hidden_dims=config.hidden_dims,
@@ -740,14 +681,66 @@ def create_trainer(
         log_std_multiplier=config.policy_log_std_multiplier,
         log_std_offset=config.policy_log_std_offset,
     )
-    qf = FullyConnectedQFunction(
+    qf_model = FullyConnectedQFunction(
         observation_dim=observations.shape[-1],
         action_dim=actions.shape[-1],
         hidden_dims=config.hidden_dims,
         orthogonal_init=config.orthogonal_init,
     )
     rng = jax.random.PRNGKey(config.seed)
-    return CQLTrainer(config, policy, qf, rng)
+    optimizer_class = {
+        "adam": optax.adam,
+        "sgd": optax.sgd,
+    }[config.optimizer_type]
+
+    rng, policy_rng, q1_rng, q2_rng = jax.random.split(rng, 4)
+
+    policy_params = policy_model.init(policy_rng, observations, policy_rng)
+    policy = TrainState.create(
+        params=policy_params,
+        tx=optimizer_class(config.policy_lr),
+        apply_fn=policy_model.apply,
+    )
+
+    qf1_params = qf_model.init(
+        q1_rng,
+        observations,
+        actions,
+    )
+    qf1 = TrainState.create(
+        params=qf1_params,
+        tx=optimizer_class(config.qf_lr),
+        apply_fn=qf_model.apply,
+    )
+    qf2_params = qf_model.init(
+        q2_rng,
+        observations,
+        actions,
+    )
+    qf2 = TrainState.create(
+        params=qf2_params,
+        tx=optimizer_class(config.qf_lr),
+        apply_fn=qf_model.apply,
+    )
+    target_qf1_params = deepcopy(qf1_params)
+    target_qf2_params = deepcopy(qf2_params)
+
+    log_alpha_model = Scalar(0.0)
+    rng, log_alpha_rng = jax.random.split(rng)
+    log_alpha = TrainState.create(
+        params=log_alpha_model.init(log_alpha_rng),
+        tx=optimizer_class(config.policy_lr),
+        apply_fn=log_alpha_model.apply,
+    )
+    return CQLTrainState(
+        policy=policy,
+        qf1=qf1,
+        qf2=qf2,
+        log_alpha=log_alpha,
+        target_qf1_params=target_qf1_params,
+        target_qf2_params=target_qf2_params,
+        global_steps=0,
+    )
 
 
 def evaluate(
@@ -776,24 +769,26 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
+    config.action_dim = env.action_space.shape[0]
 
     if config.target_entropy >= 0.0:
         config.target_entropy = -np.prod(env.action_space.shape).item()
 
-    sac = create_trainer(dataset.observations, dataset.actions, config)
-    train_states, target_qf_params = sac._train_states, sac._target_qf_params
+    example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
+    train_state = create_train_state(
+        example_batch.observations, example_batch.actions, config
+    )
+    algo = CQL()
 
     num_steps = int(config.max_steps // config.n_jitted_updates)
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         metrics = {"step": i}
         rng, update_rng = jax.random.split(rng)
-        train_states, target_qf_params, metrics = sac.train(
-            train_states, target_qf_params, dataset, update_rng, config, bc=False
-        )
+        train_state, metrics = algo.train(train_state, dataset, update_rng, config)
         metrics.update(metrics)
 
         if i == 0 or (i + 1) % config.eval_interval == 0:
-            policy_fn = partial(sac.get_action, train_states=train_states)
+            policy_fn = partial(algo.get_action, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
             )
@@ -802,7 +797,7 @@ if __name__ == "__main__":
         wandb.log(metrics)
 
     # final evaluation
-    policy_fn = partial(sac.get_action, train_states=train_states)
+    policy_fn = partial(algo.get_action, train_state=train_state)
     normalized_score = evaluate(
         policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
     )
