@@ -567,7 +567,9 @@ if __name__ == "__main__":
 
         if i % config.eval_interval == 0:
             # evaluate on env
-            normalized_score = evaluate(algo.get_action, train_state, env, config, state_mean, state_std)
+            normalized_score = evaluate(
+                algo.get_action, train_state, env, config, state_mean, state_std
+            )
             print(i, normalized_score)
             wandb.log(
                 {
