@@ -45,7 +45,7 @@ class IQLConfig(BaseModel):
     critic_lr: float = 3e-4
     # IQL SPECIFIC
     expectile: float = (
-        0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
+        0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: expectile=0.9)
     )
     beta: float = (
         3.0  # FYI: for Hopper-me, 6.0 produce better result. (antmaze: beta=10.0)
