@@ -286,28 +286,17 @@ def evaluate(env: gym.Env, actor: TrainState, num_episodes: int, seed: int) -> n
     return np.array(returns)
 
 
-@pyrallis.wrap()
-def main(config: Config):
-    wandb.init(
-        config=asdict(config),
-        project=config.project,
-        group=config.group,
-        name=config.name,
-        id=str(uuid.uuid4()),
-        save_code=True
-    )
-
-    buffer = ReplayBuffer.create_from_d4rl(config.env_name)
-    eval_env = make_env(config.env_name, seed=config.eval_seed)
-    target_entropy = -np.prod(eval_env.action_space.shape)
-    config.target_entropy = target_entropy
-
+def create_train_state(
+    observations: jax.Array,
+    actions: jax.Array,
+    config: Config
+) -> SACNTrainState:
     key = jax.random.PRNGKey(seed=config.train_seed)
     key, actor_key, critic_key, alpha_key = jax.random.split(key, 4)
-    init_state = jnp.asarray(eval_env.observation_space.sample())
-    init_action = jnp.asarray(eval_env.action_space.sample())
+    init_state = jnp.zeros_like(observations)
+    init_action = jnp.zeros_like(actions)
 
-    actor_module = Actor(action_dim=np.prod(eval_env.action_space.shape), hidden_dim=config.hidden_dim)
+    actor_module = Actor(action_dim=init_action.shape[-1], hidden_dim=config.hidden_dim)
     actor = TrainState.create(
         apply_fn=actor_module.apply,
         params=actor_module.init(actor_key, init_state),
@@ -329,6 +318,28 @@ def main(config: Config):
         tx=optax.adam(learning_rate=config.alpha_learning_rate)
     )
     train_state = SACNTrainState(actor=actor, critic=critic, alpha=alpha)
+    return train_state
+
+
+@pyrallis.wrap()
+def main(config: Config):
+    wandb.init(
+        config=asdict(config),
+        project=config.project,
+        group=config.group,
+        name=config.name,
+        id=str(uuid.uuid4()),
+        save_code=True
+    )
+
+    buffer = ReplayBuffer.create_from_d4rl(config.env_name)
+    eval_env = make_env(config.env_name, seed=config.eval_seed)
+    target_entropy = -np.prod(eval_env.action_space.shape)
+    config.target_entropy = target_entropy
+
+    example_obs = buffer.data["obs"][0]
+    example_act = buffer.data["actions"][0]
+    train_state = create_train_state(example_obs, example_act, config)
 
     def update_networks(key, train_state, batch, config):
         actor_key, critic_key = jax.random.split(key)
@@ -356,7 +367,7 @@ def main(config: Config):
         return carry
 
     update_carry = {
-        "key": key,
+        "key": jax.random.PRNGKey(config.train_seed),
         "train_state": train_state,
         "buffer": buffer,
     }
