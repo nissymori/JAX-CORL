@@ -1,5 +1,5 @@
-# source https://github.com/ikostrikov/implicit_q_learning
-# https://arxiv.org/abs/2110.06169
+# source https://github.com/Div99/XQL
+# https://arxiv.org/abs/2301.02328
 import os
 import time
 from functools import partial
@@ -23,10 +23,10 @@ from pydantic import BaseModel
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
-class IQLConfig(BaseModel):
+class XQLConfig(BaseModel):
     # GENERAL
-    algo: str = "IQL"
-    project: str = "train-IQL"
+    algo: str = "XQL"
+    project: str = "train-XQL"
     env_name: str = "halfcheetah-medium-expert-v2"
     seed: int = 42
     eval_episodes: int = 5
@@ -43,6 +43,8 @@ class IQLConfig(BaseModel):
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
+    tau: float = 0.005
+    discount: float = 0.99
     # IQL SPECIFIC
     expectile: float = (
         0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
@@ -50,8 +52,18 @@ class IQLConfig(BaseModel):
     beta: float = (
         3.0  # FYI: for Hopper-me, 6.0 produce better result. (antmaze: beta=10.0)
     )
-    tau: float = 0.005
-    discount: float = 0.99
+    # XQL SPECIFIC
+    vanilla: bool = False  # Of course, we do not use expectile loss
+    sample_random_times: int = 0  # sample random times
+    grad_pen: bool = False  # gradient penalty
+    lambda_gp: int = 1  # grad penalty coefficient
+    loss_temp: float = 1.0  # loss temperature
+    log_loss: bool = False  # log loss
+    num_v_updates: int = 1  # number of value updates
+    max_clip: float = 7.0  # Loss clip value
+    noise: bool = False  # noise
+    noise_std: float = 0.1  # noise std
+    layer_norm: bool = True  # layer norm
 
     def __hash__(
         self,
@@ -60,7 +72,7 @@ class IQLConfig(BaseModel):
 
 
 conf_dict = OmegaConf.from_cli()
-config = IQLConfig(**conf_dict)
+config = XQLConfig(**conf_dict)
 
 
 def default_init(scale: Optional[float] = 1.0):
@@ -72,12 +84,15 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
+    layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         for i, hidden_dims in enumerate(self.hidden_dims):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
             if i + 1 < len(self.hidden_dims) or self.activate_final:
+                if self.layer_norm:  # Add layer norm after activation
+                    x = nn.LayerNorm()(x)
                 x = self.activations(x)
         return x
 
@@ -108,10 +123,11 @@ def ensemblize(cls, num_qs, out_axes=0, **kwargs):
 
 class ValueCritic(nn.Module):
     hidden_dims: Sequence[int]
+    layer_norm: bool = False
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        critic = MLP((*self.hidden_dims, 1))(observations)
+        critic = MLP((*self.hidden_dims, 1), layer_norm=self.layer_norm)(observations)
         return jnp.squeeze(critic, -1)
 
 
@@ -152,7 +168,7 @@ class Transition(NamedTuple):
 
 
 def get_dataset(
-    env: gym.Env, config: IQLConfig, clip_to_eps: bool = True, eps: float = 1e-5
+    env: gym.Env, config: XQLConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
     dataset = d4rl.qlearning_dataset(env)
 
@@ -195,6 +211,52 @@ def get_dataset(
     return dataset, obs_mean, obs_std
 
 
+def gumbel_rescale_loss(diff, alpha, max_clip=None):
+    """ Gumbel loss J: E[e^x - x - 1]. For stability to outliers, we scale the gradients with the max value over a batch
+    and optionally clip the exponent. This has the effect of training with an adaptive lr.
+    """
+    z = diff/alpha
+    if max_clip is not None:
+        z = jnp.minimum(z, max_clip) # clip max value
+    max_z = jnp.max(z, axis=0)
+    max_z = jnp.where(max_z < -1.0, -1.0, max_z)
+    max_z = jax.lax.stop_gradient(max_z)  # Detach the gradients
+    loss = jnp.exp(z - max_z) - z*jnp.exp(-max_z) - jnp.exp(-max_z)  # scale by e^max_z
+    return loss
+
+def gumbel_log_loss(diff, alpha=1.0):
+    """ Gumbel loss J: E[e^x - x - 1]. We can calculate the log of Gumbel loss for stability, i.e. Log(J + 1)
+    log_gumbel_loss: log((e^x - x - 1).mean() + 1)
+    """
+    diff = diff
+    x = diff/alpha
+    grad = grad_gumbel(x, alpha)
+    # use analytic gradients to improve stability
+    loss = jax.lax.stop_gradient(grad) * x
+    return loss
+
+def grad_gumbel(x, alpha, clip_max=7):
+    """Calculate grads of log gumbel_loss: (e^x - 1)/[(e^x - x - 1).mean() + 1]
+    We add e^-a to both numerator and denominator to get: (e^(x-a) - e^(-a))/[(e^(x-a) - xe^(-a)).mean()]
+    """
+    # clip inputs to grad in [-10, 10] to improve stability (gradient clipping)
+    x = jnp.minimum(x, clip_max)  # jnp.clip(x, a_min=-10, a_max=10)
+
+    # calculate an offset `a` to prevent overflow issues
+    x_max = jnp.max(x, axis=0)
+    # choose `a` as max(x_max, -1) as its possible for x_max to be very small and we want the offset to be reasonable
+    x_max = jnp.where(x_max < -1, -1, x_max)
+
+    # keep track of original x
+    x_orig = x
+    # offsetted x
+    x1 = x - x_max
+
+    grad = (jnp.exp(x1) - jnp.exp(-x_max)) / \
+        (jnp.mean(jnp.exp(x1) - x_orig * jnp.exp(-x_max), axis=0, keepdims=True))
+    return grad
+
+
 def expectile_loss(diff, expectile=0.8) -> jnp.ndarray:
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
@@ -218,7 +280,7 @@ def update_by_loss_grad(
     return new_train_state, loss
 
 
-class IQLTrainState(NamedTuple):
+class XQLTrainState(NamedTuple):
     rng: jax.random.PRNGKey
     critic: TrainState
     target_critic: TrainState
@@ -226,11 +288,11 @@ class IQLTrainState(NamedTuple):
     actor: TrainState
 
 
-class IQL(object):
+class XQL(object):
 
     def update_critic(
-        self, train_state: IQLTrainState, batch: Transition, config: IQLConfig
-    ) -> Tuple["IQLTrainState", Dict]:
+        self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
+    ) -> Tuple["XQLTrainState", Dict]:
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
@@ -250,23 +312,55 @@ class IQL(object):
         return train_state._replace(critic=new_critic), critic_loss
 
     def update_value(
-        self, train_state: IQLTrainState, batch: Transition, config: IQLConfig
-    ) -> Tuple["IQLTrainState", Dict]:
-        def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            q1, q2 = train_state.target_critic.apply_fn(
-                train_state.target_critic.params, batch.observations, batch.actions
-            )
-            q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
-            v = train_state.value.apply_fn(value_params, batch.observations)
-            value_loss = expectile_loss(q - v, config.expectile).mean()
+        self, train_state: XQLTrainState, batch: Transition, rng, config: XQLConfig
+    ) -> Tuple["XQLTrainState", Dict]:
+        actions = batch.actions
+
+        rng1, rng2 = jax.random.split(rng)
+        if config.sample_random_times > 0:
+            # add random actions to smooth loss computation (use 1/2(rho + Unif))
+            times = config.sample_random_times
+            random_action = jax.random.uniform(
+                rng1, shape=(times * actions.shape[0],
+                            actions.shape[1]),
+                minval=-1.0, maxval=1.0)
+            obs = jnp.concatenate([batch.observations, jnp.repeat(
+                batch.observations, times, axis=0)], axis=0)
+            acts = jnp.concatenate([batch.actions, random_action], axis=0)
+        else:
+            obs = batch.observations
+            acts = batch.actions
+
+        if config.noise:
+            std = config.noise_std
+            noise = jax.random.normal(rng2, shape=(acts.shape[0], acts.shape[1]))
+            noise = jnp.clip(noise * std, -0.5, 0.5)
+            acts = (batch.actions + noise)
+            acts = jnp.clip(acts, -1, 1)
+
+        q1, q2 = train_state.target_critic.apply_fn(
+            train_state.target_critic.params, obs, acts
+        )
+        q = jnp.minimum(q1, q2)
+
+        def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> Tuple[jnp.ndarray, Dict]:
+            v = train_state.value.apply_fn(value_params, obs)
+
+            if config.vanilla:
+                value_loss = expectile_loss(q - v, config.expectile).mean()
+            else:
+                if config.log_loss:
+                    value_loss = gumbel_log_loss(q - v, alpha=config.loss_temp).mean()
+                else:
+                    value_loss = gumbel_rescale_loss(q - v, alpha=config.loss_temp, max_clip=config.max_clip).mean()
             return value_loss
 
         new_value, value_loss = update_by_loss_grad(train_state.value, value_loss_fn)
         return train_state._replace(value=new_value), value_loss
-
+    
     def update_actor(
-        self, train_state: IQLTrainState, batch: Transition, config: IQLConfig
-    ) -> Tuple["IQLTrainState", Dict]:
+        self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
+    ) -> Tuple["XQLTrainState", Dict]:
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             v = train_state.value.apply_fn(train_state.value.params, batch.observations)
             q1, q2 = train_state.critic.apply_fn(
@@ -287,11 +381,11 @@ class IQL(object):
     @partial(jax.jit, static_argnums=(0, 4))
     def update_n_times(
         self,
-        train_state: IQLTrainState,
+        train_state: XQLTrainState,
         dataset: Transition,
         rng: jax.random.PRNGKey,
-        config: IQLConfig,
-    ) -> Tuple["IQLTrainState", Dict]:
+        config: XQLConfig,
+    ) -> Tuple["XQLTrainState", Dict]:
         for _ in range(config.n_jitted_updates):
             rng, subkey = jax.random.split(rng)
             batch_indices = jax.random.randint(
@@ -299,7 +393,8 @@ class IQL(object):
             )
             batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
 
-            train_state, value_loss = self.update_value(train_state, batch, config)
+            rng, subkey = jax.random.split(rng)
+            train_state, value_loss = self.update_value(train_state, batch, subkey, config)
             train_state, actor_loss = self.update_actor(train_state, batch, config)
             train_state, critic_loss = self.update_critic(train_state, batch, config)
             new_target_critic = target_update(
@@ -315,7 +410,7 @@ class IQL(object):
     @partial(jax.jit, static_argnums=(0))
     def get_action(
         self,
-        train_state: IQLTrainState,
+        train_state: XQLTrainState,
         observations: np.ndarray,
         seed: jax.random.PRNGKey,
         temperature: float = 1.0,
@@ -331,8 +426,8 @@ class IQL(object):
 def create_train_state(
     observations: jnp.ndarray,
     actions: jnp.ndarray,
-    config: IQLConfig,
-) -> IQLTrainState:
+    config: XQLConfig,
+) -> XQLTrainState:
     rng = jax.random.PRNGKey(config.seed)
     rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
@@ -362,13 +457,13 @@ def create_train_state(
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # initialize value
-    value_model = ValueCritic(config.hidden_dims)
+    value_model = ValueCritic(config.hidden_dims, layer_norm=config.layer_norm)
     value = TrainState.create(
         apply_fn=value_model.apply,
         params=value_model.init(value_rng, observations),
         tx=optax.adam(learning_rate=config.value_lr),
     )
-    return IQLTrainState(
+    return XQLTrainState(
         rng,
         critic=critic,
         target_critic=target_critic,
@@ -416,13 +511,13 @@ if __name__ == "__main__":
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     # create train_state
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state: IQLTrainState = create_train_state(
+    train_state: XQLTrainState = create_train_state(
         example_batch.observations,
         example_batch.actions,
         config,
     )
 
-    algo = IQL()
+    algo = XQL()
 
     num_steps = config.max_steps // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):

@@ -69,19 +69,16 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
-    add_layer_norm: bool = False
-    layer_norm_final: bool = False
+    layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         for i, hidden_dims in enumerate(self.hidden_dims):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
-            if self.add_layer_norm:  # Add layer norm after activation
-                if self.layer_norm_final or i + 1 < len(self.hidden_dims):
-                    x = nn.LayerNorm()(x)
-            if (
-                i + 1 < len(self.hidden_dims) or self.activate_final
-            ):  # Add activation after layer norm
+            if i + 1 < len(self.hidden_dims) or self.activate_final:
+                if self.layer_norm:  # Add layer norm after activation
+                    if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                        x = nn.LayerNorm()(x)
                 x = self.activations(x)
         return x
 
@@ -94,8 +91,8 @@ class DoubleCritic(nn.Module):
         self, observation: jnp.ndarray, action: jnp.ndarray
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         x = jnp.concatenate([observation, action], axis=-1)
-        q1 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
-        q2 = MLP((*self.hidden_dims, 1), add_layer_norm=True)(x)
+        q1 = MLP((*self.hidden_dims, 1), layer_norm=True)(x)
+        q2 = MLP((*self.hidden_dims, 1), layer_norm=True)(x)
         return q1, q2
 
 
