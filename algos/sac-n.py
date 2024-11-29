@@ -21,6 +21,7 @@ from tqdm.auto import trange
 
 from flax.training.train_state import TrainState
 from typing import NamedTuple
+from functools import partial
 
 
 @dataclass
@@ -40,17 +41,20 @@ class Config:
     # training params
     env_name: str = "halfcheetah-medium-expert-v2"
     batch_size: int = 256
-    num_epochs: int = 3000
-    num_updates_on_epoch: int = 1000
+    max_steps: int = 1000000
+    n_jitted_updates: int = 8
     # evaluation params
     eval_episodes: int = 10
-    eval_every: int = 100
+    eval_interval: int = 50000
     # general params
     train_seed: int = 10
     eval_seed: int = 42
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
+    
+    def __hash__(self):
+        return hash(self.__repr__())
 
 
 @chex.dataclass(frozen=True)
@@ -182,76 +186,105 @@ class SACNTrainState(NamedTuple):
     critic: CriticTrainState
     alpha: TrainState
 
-# SAC-N losses
-def update_actor(
-        train_state: SACNTrainState,
-        batch: Dict[str, jax.Array],
-        rng: jax.random.PRNGKey,
-        config: Config
-) -> Tuple[SACNTrainState, Dict[str, Any]]:
-    def actor_loss_fn(actor_params):
-        actions_dist = train_state.actor.apply_fn(actor_params, batch["obs"])
-        actions, actions_logp = actions_dist.sample_and_log_prob(seed=rng)
 
-        q_values = train_state.critic.apply_fn(train_state.critic.params, batch["obs"], actions).min(0)
-        loss = (train_state.alpha.apply_fn(train_state.alpha.params) * actions_logp.sum(-1) - q_values).mean()
+class SACN(object):
+    # SAC-N losses
+    def update_actor(
+            self,
+            train_state: SACNTrainState,
+            batch: Dict[str, jax.Array],
+            rng: jax.random.PRNGKey,
+            config: Config
+    ) -> Tuple[SACNTrainState, Dict[str, Any]]:
+        def actor_loss_fn(actor_params):
+            actions_dist = train_state.actor.apply_fn(actor_params, batch["obs"])
+            actions, actions_logp = actions_dist.sample_and_log_prob(seed=rng)
 
-        batch_entropy = -actions_logp.sum(-1).mean()
-        return loss, batch_entropy
+            q_values = train_state.critic.apply_fn(train_state.critic.params, batch["obs"], actions).min(0)
+            loss = (train_state.alpha.apply_fn(train_state.alpha.params) * actions_logp.sum(-1) - q_values).mean()
 
-    (loss, batch_entropy), grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(train_state.actor.params)
-    new_actor = train_state.actor.apply_gradients(grads=grads)
-    info = {
-        "batch_entropy": batch_entropy,
-        "actor_loss": loss
-    }
-    return train_state._replace(actor=new_actor), info
+            batch_entropy = -actions_logp.sum(-1).mean()
+            return loss, batch_entropy
 
-
-def update_alpha(
-        train_state: SACNTrainState,
-        entropy: float,
-        config: Config
-) -> Tuple[SACNTrainState, Dict[str, Any]]:
-    def alpha_loss_fn(alpha_params):
-        alpha_value = train_state.alpha.apply_fn(alpha_params)
-        loss = (alpha_value * (entropy - config.target_entropy)).mean()
-        return loss
-
-    loss, grads = jax.value_and_grad(alpha_loss_fn)(train_state.alpha.params)
-    new_alpha = train_state.alpha.apply_gradients(grads=grads)
-    info = {
-        "alpha": train_state.alpha.apply_fn(train_state.alpha.params),
-        "alpha_loss": loss
-    }
-    return train_state._replace(alpha=new_alpha), info
+        (loss, batch_entropy), grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(train_state.actor.params)
+        new_actor = train_state.actor.apply_gradients(grads=grads)
+        info = {
+            "batch_entropy": batch_entropy,
+            "actor_loss": loss
+        }
+        return train_state._replace(actor=new_actor), info
 
 
-def update_critic(
-        train_state: SACNTrainState,
-        batch: Dict[str, jax.Array],
-        rng: jax.random.PRNGKey,
-        config: Config
-) -> Tuple[SACNTrainState, Dict[str, Any]]:
-    next_actions_dist = train_state.actor.apply_fn(train_state.actor.params, batch["next_obs"])
-    next_actions, next_actions_logp = next_actions_dist.sample_and_log_prob(seed=rng)
+    def update_alpha(
+            self,
+            train_state: SACNTrainState,
+            entropy: float,
+            config: Config
+    ) -> Tuple[SACNTrainState, Dict[str, Any]]:
+        def alpha_loss_fn(alpha_params):
+            alpha_value = train_state.alpha.apply_fn(alpha_params)
+            loss = (alpha_value * (entropy - config.target_entropy)).mean()
+            return loss
 
-    next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch["next_obs"], next_actions).min(0)
-    next_q = next_q - train_state.alpha.apply_fn(train_state.alpha.params) * next_actions_logp.sum(-1)
-    target_q = batch["rewards"] + (1 - batch["dones"]) * config.gamma * next_q
+        loss, grads = jax.value_and_grad(alpha_loss_fn)(train_state.alpha.params)
+        new_alpha = train_state.alpha.apply_gradients(grads=grads)
+        info = {
+            "alpha": train_state.alpha.apply_fn(train_state.alpha.params),
+            "alpha_loss": loss
+        }
+        return train_state._replace(alpha=new_alpha), info
 
-    def critic_loss_fn(critic_params):
-        # [N, batch_size] - [1, batch_size]
-        q = train_state.critic.apply_fn(critic_params, batch["obs"], batch["actions"])
-        loss = ((q - target_q[None, ...]) ** 2).mean(1).sum(0)
-        return loss
 
-    loss, grads = jax.value_and_grad(critic_loss_fn)(train_state.critic.params)
-    new_critic = train_state.critic.apply_gradients(grads=grads).soft_update(tau=config.tau)
-    info = {
-        "critic_loss": loss
-    }
-    return train_state._replace(critic=new_critic), info
+    def update_critic(
+            self,
+            train_state: SACNTrainState,
+            batch: Dict[str, jax.Array],
+            rng: jax.random.PRNGKey,
+            config: Config
+    ) -> Tuple[SACNTrainState, Dict[str, Any]]:
+        next_actions_dist = train_state.actor.apply_fn(train_state.actor.params, batch["next_obs"])
+        next_actions, next_actions_logp = next_actions_dist.sample_and_log_prob(seed=rng)
+
+        next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch["next_obs"], next_actions).min(0)
+        next_q = next_q - train_state.alpha.apply_fn(train_state.alpha.params) * next_actions_logp.sum(-1)
+        target_q = batch["rewards"] + (1 - batch["dones"]) * config.gamma * next_q
+
+        def critic_loss_fn(critic_params):
+            # [N, batch_size] - [1, batch_size]
+            q = train_state.critic.apply_fn(critic_params, batch["obs"], batch["actions"])
+            loss = ((q - target_q[None, ...]) ** 2).mean(1).sum(0)
+            return loss
+
+        loss, grads = jax.value_and_grad(critic_loss_fn)(train_state.critic.params)
+        new_critic = train_state.critic.apply_gradients(grads=grads).soft_update(tau=config.tau)
+        info = {
+            "critic_loss": loss
+        }
+        return train_state._replace(critic=new_critic), info
+    
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def update_n_times(
+            self,
+            train_state: SACNTrainState,
+            buffer: ReplayBuffer,
+            rng: jax.random.PRNGKey,
+            config: Config
+    ):
+        for _ in range(config.n_jitted_updates):
+            rng, batch_rng, actor_rng, critic_rng = jax.random.split(rng, 4)
+            batch = buffer.sample_batch(batch_rng, config.batch_size)
+
+            train_state, actor_info = self.update_actor(train_state, batch, actor_rng, config)
+            train_state, alpha_info = self.update_alpha(train_state, actor_info["batch_entropy"], config)
+            train_state, critic_info = self.update_critic(train_state, batch, critic_rng, config)
+        return train_state, {
+            "critic_loss": critic_info["critic_loss"],
+            "actor_loss": actor_info["actor_loss"],
+            "alpha_loss": alpha_info["alpha_loss"],
+            "alpha": alpha_info["alpha"],
+            "batch_entropy": actor_info["batch_entropy"]
+        }
 
 
 # evaluation
@@ -331,7 +364,7 @@ def main(config: Config):
         id=str(uuid.uuid4()),
         save_code=True
     )
-
+    rng = jax.random.PRNGKey(config.train_seed)
     buffer = ReplayBuffer.create_from_d4rl(config.env_name)
     eval_env = make_env(config.env_name, seed=config.eval_seed)
     target_entropy = -np.prod(eval_env.action_space.shape)
@@ -341,66 +374,24 @@ def main(config: Config):
     example_act = buffer.data["actions"][0]
     train_state = create_train_state(example_obs, example_act, config)
 
-    def update_networks(key, train_state, batch, config):
-        actor_key, critic_key = jax.random.split(key)
+    algo = SACN()
+    num_steps = int(config.max_steps / config.n_jitted_updates)
+    eval_interval = int(config.eval_interval / config.n_jitted_updates)
+    for _ in trange(num_steps):
+        rng, update_rng = jax.random.split(rng)
+        train_state, update_info = algo.update_n_times(train_state, buffer, update_rng, config)
+        wandb.log({"step": _, **update_info})
 
-        train_state, actor_info = update_actor(train_state, batch, actor_key, config)
-        train_state, alpha_info = update_alpha(train_state, actor_info["batch_entropy"], config)
-        train_state, critic_info = update_critic(train_state, batch, critic_key, config)
-
-        return train_state, {**actor_info, **critic_info, **alpha_info}
-
-    @jax.jit
-    def update_step(_, carry):
-        key, update_key, batch_key = jax.random.split(carry["key"], 3)
-        batch = carry["buffer"].sample_batch(batch_key, batch_size=config.batch_size)
-
-        train_state, update_info = update_networks(
-            key=update_key,
-            train_state=carry["train_state"],
-            batch=batch,
-            config=config
-        )
-        update_info = jax.tree_map(lambda c, u: c + u, carry["update_info"], update_info)
-        carry.update(key=key, train_state=train_state, update_info=update_info)
-
-        return carry
-
-    update_carry = {
-        "key": jax.random.PRNGKey(config.train_seed),
-        "train_state": train_state,
-        "buffer": buffer,
-    }
-    for epoch in trange(config.num_epochs):
-        # metrics for accumulation during epoch and logging to wandb, we need to reset them every epoch
-        update_carry["update_info"] = {
-            "critic_loss": jnp.array([0.0]),
-            "actor_loss": jnp.array([0.0]),
-            "alpha_loss": jnp.array([0.0]),
-            "alpha": jnp.array([0.0]),
-            "batch_entropy": jnp.array([0.0])
-        }
-        update_carry = jax.lax.fori_loop(
-            lower=0,
-            upper=config.num_updates_on_epoch,
-            body_fun=update_step,
-            init_val=update_carry
-        )
-        # log mean over epoch for each metric
-        update_info = jax.tree_map(lambda v: v.item() / config.num_updates_on_epoch, update_carry["update_info"])
-        wandb.log({"epoch": epoch, **update_info})
-
-        if epoch % config.eval_every == 0 or epoch == config.num_epochs - 1:
-            train_state = update_carry["train_state"]
+        if _ % eval_interval == 0:
             eval_returns = evaluate(eval_env, train_state.actor, config.eval_episodes, seed=config.eval_seed)
             normalized_score = eval_env.get_normalized_score(eval_returns) * 100.0
 
             wandb.log({
-                "epoch": epoch,
+                "step": _,
                 "eval/normalized_score_mean": np.mean(normalized_score),
                 "eval/normalized_score_std": np.std(normalized_score)
             })
-            print(f"Epoch {epoch}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}")
+            print(f"Epoch {_}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}")
 
 
 if __name__ == "__main__":
