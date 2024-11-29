@@ -1,4 +1,5 @@
 import copy
+import os
 import gym
 import d4rl
 import pyrallis
@@ -22,14 +23,17 @@ from tqdm.auto import trange
 from flax.training.train_state import TrainState
 from typing import NamedTuple
 from functools import partial
+from omegaconf import OmegaConf
+from pydantic import BaseModel
+
+os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
 
-@dataclass
-class Config:
+class SACNConfig(BaseModel):
     # wandb params
-    project: str = "SAC-N-JAX"
-    group: str = "SAC-N"
-    name: str = "sac-n-jax-flax"
+    algo: str = "SAC-N"
+    project: str = "train-SAC-N"    
+    env_name: str = "halfcheetah-medium-expert-v2"
     # model params
     hidden_dim: int = 256
     num_critics: int = 10
@@ -39,7 +43,6 @@ class Config:
     critic_learning_rate: float = 3e-4
     alpha_learning_rate: float = 3e-4
     # training params
-    env_name: str = "halfcheetah-medium-expert-v2"
     batch_size: int = 256
     max_steps: int = 1000000
     n_jitted_updates: int = 8
@@ -47,14 +50,14 @@ class Config:
     eval_episodes: int = 10
     eval_interval: int = 50000
     # general params
-    train_seed: int = 10
+    seed: int = 10
     eval_seed: int = 42
-
-    def __post_init__(self):
-        self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
     
     def __hash__(self):
         return hash(self.__repr__())
+
+conf_dict = OmegaConf.from_cli()
+config = SACNConfig(**conf_dict)
 
 
 @chex.dataclass(frozen=True)
@@ -324,7 +327,7 @@ def create_train_state(
     actions: jax.Array,
     config: Config
 ) -> SACNTrainState:
-    key = jax.random.PRNGKey(seed=config.train_seed)
+    key = jax.random.PRNGKey(seed=config.seed)
     key, actor_key, critic_key, alpha_key = jax.random.split(key, 4)
     init_state = jnp.zeros_like(observations)
     init_action = jnp.zeros_like(actions)
@@ -354,17 +357,9 @@ def create_train_state(
     return train_state
 
 
-@pyrallis.wrap()
-def main(config: Config):
-    wandb.init(
-        config=asdict(config),
-        project=config.project,
-        group=config.group,
-        name=config.name,
-        id=str(uuid.uuid4()),
-        save_code=True
-    )
-    rng = jax.random.PRNGKey(config.train_seed)
+if __name__ == "__main__":
+    wandb.init(config=config, project=config.project)
+    rng = jax.random.PRNGKey(config.seed)
     buffer = ReplayBuffer.create_from_d4rl(config.env_name)
     eval_env = make_env(config.env_name, seed=config.eval_seed)
     target_entropy = -np.prod(eval_env.action_space.shape)
@@ -392,7 +387,4 @@ def main(config: Config):
                 "eval/normalized_score_std": np.std(normalized_score)
             })
             print(f"Epoch {_}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}")
-
-
-if __name__ == "__main__":
-    main()
+    wandb.finish()
