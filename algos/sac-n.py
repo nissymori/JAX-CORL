@@ -42,6 +42,7 @@ class SACNConfig(BaseModel):
     actor_learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     alpha_learning_rate: float = 3e-4
+    target_entropy: float = 0
     # training params
     batch_size: int = 256
     max_steps: int = 1000000
@@ -197,7 +198,7 @@ class SACN(object):
             train_state: SACNTrainState,
             batch: Dict[str, jax.Array],
             rng: jax.random.PRNGKey,
-            config: Config
+            config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
         def actor_loss_fn(actor_params):
             actions_dist = train_state.actor.apply_fn(actor_params, batch["obs"])
@@ -222,7 +223,7 @@ class SACN(object):
             self,
             train_state: SACNTrainState,
             entropy: float,
-            config: Config
+            config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
         def alpha_loss_fn(alpha_params):
             alpha_value = train_state.alpha.apply_fn(alpha_params)
@@ -243,7 +244,7 @@ class SACN(object):
             train_state: SACNTrainState,
             batch: Dict[str, jax.Array],
             rng: jax.random.PRNGKey,
-            config: Config
+            config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
         next_actions_dist = train_state.actor.apply_fn(train_state.actor.params, batch["next_obs"])
         next_actions, next_actions_logp = next_actions_dist.sample_and_log_prob(seed=rng)
@@ -272,7 +273,7 @@ class SACN(object):
             train_state: SACNTrainState,
             buffer: ReplayBuffer,
             rng: jax.random.PRNGKey,
-            config: Config
+            config: SACNConfig
     ):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, actor_rng, critic_rng = jax.random.split(rng, 4)
@@ -325,7 +326,7 @@ def evaluate(env: gym.Env, actor: TrainState, num_episodes: int, seed: int) -> n
 def create_train_state(
     observations: jax.Array,
     actions: jax.Array,
-    config: Config
+    config: SACNConfig
 ) -> SACNTrainState:
     key = jax.random.PRNGKey(seed=config.seed)
     key, actor_key, critic_key, alpha_key = jax.random.split(key, 4)
