@@ -42,11 +42,11 @@ class SACNConfig(BaseModel):
     actor_learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     alpha_learning_rate: float = 3e-4
-    target_entropy: float = 0
     # training params
     batch_size: int = 256
     max_steps: int = 1000000
     n_jitted_updates: int = 8
+    target_entropy: float = -1.0
     # evaluation params
     eval_episodes: int = 10
     eval_interval: int = 50000
