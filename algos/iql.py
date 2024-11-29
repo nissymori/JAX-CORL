@@ -44,8 +44,8 @@ class IQLConfig(BaseModel):
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
     # IQL SPECIFIC
-    tau: float = (
-        0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
+    expectile: float = (
+        0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: expectile=0.9)
     )
     beta: float = (
         3.0  # FYI: for Hopper-me, 6.0 produce better result. (antmaze: beta=10.0)
@@ -258,7 +258,7 @@ class IQL(object):
             )
             q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
             v = train_state.value.apply_fn(value_params, batch.observations)
-            value_loss = expectile_loss(q - v, config.tau).mean()
+            value_loss = expectile_loss(q - v, config.expectile).mean()
             return value_loss
 
         new_value, value_loss = update_by_loss_grad(train_state.value, value_loss_fn)
