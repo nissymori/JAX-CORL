@@ -33,7 +33,7 @@ class SACNConfig(BaseModel):
     # wandb params
     algo: str = "SAC-N"
     project: str = "train-SAC-N"    
-    env_name: str = "halfcheetah-medium-expert-v2"
+    env_name: str = "halfcheetah-medium"
     # model params
     hidden_dim: int = 256
     num_critics: int = 10
@@ -45,8 +45,10 @@ class SACNConfig(BaseModel):
     # training params
     batch_size: int = 256
     max_steps: int = 1000000
+    data_size: int = 1000000
     n_jitted_updates: int = 8
     target_entropy: float = -1.0
+    normalize_state: bool = True
     # evaluation params
     eval_episodes: int = 10
     eval_interval: int = 50000
@@ -59,33 +61,6 @@ class SACNConfig(BaseModel):
 
 conf_dict = OmegaConf.from_cli()
 config = SACNConfig(**conf_dict)
-
-
-@chex.dataclass(frozen=True)
-class ReplayBuffer:
-    data: Dict[str, jax.Array]
-
-    @staticmethod
-    def create_from_d4rl(dataset_name: str) -> "ReplayBuffer":
-        d4rl_data = d4rl.qlearning_dataset(gym.make(dataset_name))
-        buffer = {
-            "obs": jnp.asarray(d4rl_data["observations"], dtype=jnp.float32),
-            "actions": jnp.asarray(d4rl_data["actions"], dtype=jnp.float32),
-            "rewards": jnp.asarray(d4rl_data["rewards"], dtype=jnp.float32),
-            "next_obs": jnp.asarray(d4rl_data["next_observations"], dtype=jnp.float32),
-            "dones": jnp.asarray(d4rl_data["terminals"], dtype=jnp.float32)
-        }
-        return ReplayBuffer(data=buffer)
-
-    @property
-    def size(self):
-        # WARN: do not use __len__ here! It will use len of the dataclass, i.e. number of fields.
-        return self.data["obs"].shape[0]
-
-    def sample_batch(self, key: jax.random.PRNGKey, batch_size: int) -> Dict[str, jax.Array]:
-        indices = jax.random.randint(key, shape=(batch_size,), minval=0, maxval=self.size)
-        batch = jax.tree_map(lambda arr: arr[indices], self.data)
-        return batch
 
 
 class CriticTrainState(TrainState):
@@ -185,6 +160,58 @@ class Alpha(nn.Module):
         return jnp.exp(log_alpha)
 
 
+class Transition(NamedTuple):
+    observations: jnp.ndarray
+    actions: jnp.ndarray
+    rewards: jnp.ndarray
+    next_observations: jnp.ndarray
+    dones: jnp.ndarray
+
+
+def get_dataset(
+    env: gym.Env, config: SACNConfig, clip_to_eps: bool = True, eps: float = 1e-5
+) -> Transition:
+    dataset = d4rl.qlearning_dataset(env)
+
+    if clip_to_eps:
+        lim = 1 - eps
+        dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
+
+    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
+    same_obs = np.all(
+        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
+        axis=-1,
+    )
+    dones = 1.0 - same_obs.astype(np.float32)
+    dones[-1] = 1
+
+    dataset = Transition(
+        observations=jnp.array(dataset["observations"], dtype=jnp.float32),
+        actions=jnp.array(dataset["actions"], dtype=jnp.float32),
+        rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
+        dones=jnp.array(dones, dtype=jnp.float32),
+        next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
+    )
+    # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
+    rng = jax.random.PRNGKey(config.seed)
+    rng, rng_permute, rng_select = jax.random.split(rng, 3)
+    perm = jax.random.permutation(rng_permute, len(dataset.observations))
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
+    # normalize states
+    obs_mean, obs_std = 0, 1
+    if config.normalize_state:
+        obs_mean = dataset.observations.mean(0)
+        obs_std = dataset.observations.std(0)
+        dataset = dataset._replace(
+            observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
+            next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
+        )
+    return dataset, obs_mean, obs_std
+
+
 
 class SACNTrainState(NamedTuple):
     actor: TrainState
@@ -197,15 +224,15 @@ class SACN(object):
     def update_actor(
             self,
             train_state: SACNTrainState,
-            batch: Dict[str, jax.Array],
+            batch: Transition,
             rng: jax.random.PRNGKey,
             config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
         def actor_loss_fn(actor_params):
-            actions_dist = train_state.actor.apply_fn(actor_params, batch["obs"])
+            actions_dist = train_state.actor.apply_fn(actor_params, batch.observations)
             actions, actions_logp = actions_dist.sample_and_log_prob(seed=rng)
 
-            q_values = train_state.critic.apply_fn(train_state.critic.params, batch["obs"], actions).min(0)
+            q_values = train_state.critic.apply_fn(train_state.critic.params, batch.observations, actions).min(0)
             loss = (train_state.alpha.apply_fn(train_state.alpha.params) * actions_logp.sum(-1) - q_values).mean()
 
             batch_entropy = -actions_logp.sum(-1).mean()
@@ -243,20 +270,20 @@ class SACN(object):
     def update_critic(
             self,
             train_state: SACNTrainState,
-            batch: Dict[str, jax.Array],
+            batch: Transition,
             rng: jax.random.PRNGKey,
             config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
-        next_actions_dist = train_state.actor.apply_fn(train_state.actor.params, batch["next_obs"])
+        next_actions_dist = train_state.actor.apply_fn(train_state.actor.params, batch.next_observations)
         next_actions, next_actions_logp = next_actions_dist.sample_and_log_prob(seed=rng)
 
-        next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch["next_obs"], next_actions).min(0)
+        next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch.next_observations, next_actions).min(0)
         next_q = next_q - train_state.alpha.apply_fn(train_state.alpha.params) * next_actions_logp.sum(-1)
-        target_q = batch["rewards"] + (1 - batch["dones"]) * config.gamma * next_q
+        target_q = batch.rewards + (1 - batch.dones) * config.gamma * next_q
 
         def critic_loss_fn(critic_params):
             # [N, batch_size] - [1, batch_size]
-            q = train_state.critic.apply_fn(critic_params, batch["obs"], batch["actions"])
+            q = train_state.critic.apply_fn(critic_params, batch.observations, batch.actions)
             loss = ((q - target_q[None, ...]) ** 2).mean(1).sum(0)
             return loss
 
@@ -272,13 +299,14 @@ class SACN(object):
     def update_n_times(
             self,
             train_state: SACNTrainState,
-            buffer: ReplayBuffer,
+            dataset: Transition,
             rng: jax.random.PRNGKey,
             config: SACNConfig
     ):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, actor_rng, critic_rng = jax.random.split(rng, 4)
-            batch = buffer.sample_batch(batch_rng, config.batch_size)
+            indices = jax.random.randint(batch_rng, shape=(config.batch_size,), minval=0, maxval=dataset.observations.shape[0])
+            batch = jax.tree_util.tree_map(lambda arr: arr[indices], dataset)
 
             train_state, actor_info = self.update_actor(train_state, batch, actor_rng, config)
             train_state, alpha_info = self.update_alpha(train_state, actor_info["batch_entropy"], config)
@@ -290,30 +318,36 @@ class SACN(object):
             "alpha": alpha_info["alpha"],
             "batch_entropy": actor_info["batch_entropy"]
         }
+    
+    @partial(jax.jit, static_argnums=(0))
+    def get_action(
+            self,
+            train_state: SACNTrainState,
+            obs: jax.Array,
+    ) -> jax.Array:
+        dist = train_state.actor.apply_fn(train_state.actor.params, obs)
+        action = dist.mean()
+        return action
 
 
-# evaluation
-@jax.jit
-def eval_actions_jit(actor: TrainState, obs: jax.Array) -> jax.Array:
-    dist = actor.apply_fn(actor.params, obs)
-    action = dist.mean()
-    return action
-
-
-def evaluate(env: gym.Env, actor: TrainState, num_episodes: int, seed: int) -> np.ndarray:
-    env.seed(seed)
-
-    returns = []
-    for _ in trange(num_episodes, leave=False):
-        obs, done = env.reset(), False
-        total_reward = 0.0
+def evaluate(
+    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    env: gym.Env,
+    num_episodes: int,
+    obs_mean,
+    obs_std,
+) -> float:  # D4RL specific
+    episode_returns = []
+    for _ in range(num_episodes):
+        episode_return = 0
+        observation, done = env.reset(), False
         while not done:
-            action = eval_actions_jit(actor, obs)
-            obs, reward, done, _ = env.step(np.asarray(jax.device_get(action)))
-            total_reward += reward
-        returns.append(total_reward)
-
-    return np.array(returns)
+            observation = (observation - obs_mean) / obs_std
+            action = policy_fn(obs=observation)
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
+        episode_returns.append(episode_return)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
 def create_train_state(
@@ -354,13 +388,13 @@ def create_train_state(
 if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
-    buffer = ReplayBuffer.create_from_d4rl(config.env_name)
     env = gym.make(config.env_name)
+    dataset, obs_mean, obs_std = get_dataset(env, config)
     target_entropy = -np.prod(env.action_space.shape)
     config.target_entropy = target_entropy
 
-    example_obs = buffer.data["obs"][0]
-    example_act = buffer.data["actions"][0]
+    example_obs = dataset.observations[0]
+    example_act = dataset.actions[0]
     train_state = create_train_state(example_obs, example_act, config)
 
     algo = SACN()
@@ -368,12 +402,18 @@ if __name__ == "__main__":
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
     for _ in trange(num_steps):
         rng, update_rng = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(train_state, buffer, update_rng, config)
+        train_state, update_info = algo.update_n_times(train_state, dataset, update_rng, config)
         wandb.log({"step": _, **update_info})
 
         if _ % eval_interval == 0:
-            eval_returns = evaluate(env, train_state.actor, config.eval_episodes, seed=config.eval_seed)
-            normalized_score = env.get_normalized_score(eval_returns) * 100.0
+            policy_fn = partial(algo.get_action, train_state=train_state)
+            normalized_score = evaluate(
+                policy_fn,
+                env,
+                num_episodes=config.eval_episodes,
+                obs_mean=obs_mean,
+                obs_std=obs_std,
+            )
 
             wandb.log({
                 "step": _,
