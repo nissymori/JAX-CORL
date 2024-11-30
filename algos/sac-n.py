@@ -185,6 +185,7 @@ class Alpha(nn.Module):
         return jnp.exp(log_alpha)
 
 
+
 class SACNTrainState(NamedTuple):
     actor: TrainState
     critic: CriticTrainState
@@ -299,14 +300,6 @@ def eval_actions_jit(actor: TrainState, obs: jax.Array) -> jax.Array:
     return action
 
 
-def make_env(env_name: str, seed: int) -> gym.Env:
-    env = gym.make(env_name)
-    env.seed(seed)
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
-    return env
-
-
 def evaluate(env: gym.Env, actor: TrainState, num_episodes: int, seed: int) -> np.ndarray:
     env.seed(seed)
 
@@ -362,8 +355,8 @@ if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     buffer = ReplayBuffer.create_from_d4rl(config.env_name)
-    eval_env = make_env(config.env_name, seed=config.eval_seed)
-    target_entropy = -np.prod(eval_env.action_space.shape)
+    env = gym.make(config.env_name)
+    target_entropy = -np.prod(env.action_space.shape)
     config.target_entropy = target_entropy
 
     example_obs = buffer.data["obs"][0]
@@ -379,8 +372,8 @@ if __name__ == "__main__":
         wandb.log({"step": _, **update_info})
 
         if _ % eval_interval == 0:
-            eval_returns = evaluate(eval_env, train_state.actor, config.eval_episodes, seed=config.eval_seed)
-            normalized_score = eval_env.get_normalized_score(eval_returns) * 100.0
+            eval_returns = evaluate(env, train_state.actor, config.eval_episodes, seed=config.eval_seed)
+            normalized_score = env.get_normalized_score(eval_returns) * 100.0
 
             wandb.log({
                 "step": _,
