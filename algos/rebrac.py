@@ -546,6 +546,34 @@ def action_fn(actor: TrainState) -> Callable:
     return _action_fn
 
 
+def create_train_state(observation, action, config):
+    key = jax.random.PRNGKey(seed=config.train_seed)
+    key, actor_key, critic_key = jax.random.split(key, 3)
+
+    action_dim = action.shape[-1]
+
+    actor_module = DetActor(action_dim=action_dim, hidden_dim=config.hidden_dim, layernorm=config.actor_ln,
+                            n_hiddens=config.actor_n_hiddens)
+    actor = ActorTrainState.create(
+        apply_fn=actor_module.apply,
+        params=actor_module.init(actor_key, observation),
+        target_params=actor_module.init(actor_key, observation),
+        tx=optax.adam(learning_rate=config.actor_learning_rate),
+    )
+
+    critic_module = EnsembleCritic(hidden_dim=config.hidden_dim, num_critics=2, layernorm=config.critic_ln,
+                                   n_hiddens=config.critic_n_hiddens)
+    critic = CriticTrainState.create(
+        apply_fn=critic_module.apply,
+        params=critic_module.init(critic_key, observation, action),
+        target_params=critic_module.init(critic_key, observation, action),
+        tx=optax.adam(learning_rate=config.critic_learning_rate),
+    )
+
+    train_state = SACNState(actor=actor, critic=critic)
+    return train_state
+
+
 @pyrallis.wrap()
 def main(config: Config):
     dict_config = asdict(config)
@@ -561,34 +589,11 @@ def main(config: Config):
     wandb.mark_preempting()
     buffer = ReplayBuffer()
     buffer.create_from_d4rl(config.dataset_name, config.normalize_reward, config.normalize_states)
-
-    key = jax.random.PRNGKey(seed=config.train_seed)
-    key, actor_key, critic_key = jax.random.split(key, 3)
-
     eval_env = make_env(config.dataset_name, seed=config.eval_seed)
     eval_env = wrap_env(eval_env, buffer.mean, buffer.std)
-    init_state = buffer.data["states"][0][None, ...]
-    init_action = buffer.data["actions"][0][None, ...]
 
-    actor_module = DetActor(action_dim=init_action.shape[-1], hidden_dim=config.hidden_dim, layernorm=config.actor_ln,
-                            n_hiddens=config.actor_n_hiddens)
-    actor = ActorTrainState.create(
-        apply_fn=actor_module.apply,
-        params=actor_module.init(actor_key, init_state),
-        target_params=actor_module.init(actor_key, init_state),
-        tx=optax.adam(learning_rate=config.actor_learning_rate),
-    )
-
-    critic_module = EnsembleCritic(hidden_dim=config.hidden_dim, num_critics=2, layernorm=config.critic_ln,
-                                   n_hiddens=config.critic_n_hiddens)
-    critic = CriticTrainState.create(
-        apply_fn=critic_module.apply,
-        params=critic_module.init(critic_key, init_state, init_action),
-        target_params=critic_module.init(critic_key, init_state, init_action),
-        tx=optax.adam(learning_rate=config.critic_learning_rate),
-    )
-
-    train_state = SACNState(actor=actor, critic=critic)
+    key = jax.random.PRNGKey(seed=config.train_seed)
+    train_state = create_train_state(buffer.data["states"][0], buffer.data["actions"][0], config)
 
     update_td3_partial = partial(
         update_td3, gamma=config.gamma,
@@ -645,7 +650,7 @@ def main(config: Config):
 
     @jax.jit
     def actor_action_fn(params, obs):
-        return actor.apply_fn(params, obs)
+        return train_state.actor.apply_fn(params, obs)
 
     for epoch in trange(config.num_epochs, desc="ReBRAC Epochs"):
         # for epoch in range(config.num_epochs):
