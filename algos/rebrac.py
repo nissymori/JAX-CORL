@@ -1,3 +1,6 @@
+# Copied and modified from https://github.com/tinkoff-ai/ReBRAC/tree/public-release
+# Paper: https://arxiv.org/abs/2305.09836
+
 import os
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
@@ -78,26 +81,6 @@ config = ReBRACConfig(**conf_dict)
 from copy import deepcopy
 from tqdm.auto import trange
 from typing import Sequence, Dict, Callable, Tuple, Union
-
-
-
-def evaluate(env: gym.Env, params, action_fn: Callable, num_episodes: int, seed: int) -> np.ndarray:
-    env.seed(seed)
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
-
-    returns = []
-    for _ in trange(num_episodes, desc="Eval", leave=False):
-    # for _ in range(num_episodes):
-        obs, done = env.reset(), False
-        total_reward = 0.0
-        while not done:
-            action = np.asarray(jax.device_get(action_fn(params, obs)))
-            obs, reward, done, _ = env.step(action)
-            total_reward += reward
-        returns.append(total_reward)
-
-    return np.array(returns)
 
 
 default_kernel_init = nn.initializers.lecun_normal()
@@ -351,7 +334,7 @@ class ActorTrainState(TrainState):
     target_params: FrozenDict
 
 
-class SACNState(NamedTuple):
+class ReBRACTrainState(NamedTuple):
     actor: TrainState
     critic: CriticTrainState
 
@@ -359,11 +342,11 @@ class SACNState(NamedTuple):
 class ReBRAC(object):
     def update_actor(
         self,
-        train_state: SACNState,
+        train_state: ReBRACTrainState,
         batch: Dict[str, jax.Array],
         rng: jax.random.PRNGKey,
         config: ReBRACConfig,
-    ) -> Tuple[SACNState, jax.Array]:
+    ) -> Tuple[ReBRACTrainState, jax.Array]:
         key, random_action_key = jax.random.split(rng, 2)
 
         def actor_loss_fn(params):
@@ -396,11 +379,11 @@ class ReBRAC(object):
 
     def update_critic(
             self,
-            train_state: SACNState,
+            train_state: ReBRACTrainState,
             batch: Dict[str, jax.Array],
             rng: jax.random.PRNGKey,
             config: ReBRACConfig,
-    ) -> Tuple[SACNState, jax.Array]:
+    ) -> Tuple[ReBRACTrainState, jax.Array]:
         key, actions_key = jax.random.split(rng)
 
         next_actions = train_state.actor.apply_fn(train_state.actor.target_params, batch.next_observations)
@@ -429,7 +412,7 @@ class ReBRAC(object):
     @partial(jax.jit, static_argnums=(0, 4))
     def update_n_times(
         self,
-        train_state: SACNState,
+        train_state: ReBRACTrainState,
         dataset: Transition,
         rng: jax.random.PRNGKey,
         config: ReBRACConfig,
@@ -445,14 +428,9 @@ class ReBRAC(object):
 
         return train_state, {"critic_loss": critic_loss, "actor_loss": actor_loss}
 
-
-def action_fn(actor: TrainState) -> Callable:
-    @jax.jit
-    def _action_fn(obs: jax.Array) -> jax.Array:
-        action = actor.apply_fn(actor.params, obs)
-        return action
-
-    return _action_fn
+    @partial(jax.jit, static_argnums=(0,))
+    def get_action(self, train_state: ReBRACTrainState, obs: jax.Array) -> jax.Array:
+        return train_state.actor.apply_fn(train_state.actor.params, obs)
 
 
 def create_train_state(observation, action, config):
@@ -479,8 +457,28 @@ def create_train_state(observation, action, config):
         tx=optax.adam(learning_rate=config.critic_learning_rate),
     )
 
-    train_state = SACNState(actor=actor, critic=critic)
+    train_state = ReBRACTrainState(actor=actor, critic=critic)
     return train_state
+
+
+def evaluate(
+    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    env: gym.Env,
+    num_episodes: int,
+    obs_mean,
+    obs_std,
+) -> float:  # D4RL specific
+    episode_returns = []
+    for _ in range(num_episodes):
+        episode_return = 0
+        observation, done = env.reset(), False
+        while not done:
+            observation = (observation - obs_mean) / obs_std
+            action = policy_fn(obs=observation)
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
+        episode_returns.append(episode_return)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
 if __name__ == "__main__":
@@ -499,11 +497,6 @@ if __name__ == "__main__":
     train_state = create_train_state(example_batch.observations, example_batch.actions, config)
 
     rebrac = ReBRAC()
-    
-
-    @jax.jit
-    def actor_action_fn(params, obs):
-        return train_state.actor.apply_fn(params, obs)
 
     num_steps = int(config.max_steps / config.n_jitted_updates)
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
@@ -513,15 +506,11 @@ if __name__ == "__main__":
         wandb.log({"epoch": step, **{f"ReBRAC/{k}": v for k, v in info.items()}})
 
         if step % eval_interval == 0 or step == num_steps - 1:
-            eval_returns = evaluate(env, train_state.actor.params, actor_action_fn, config.eval_episodes,
-                                    seed=config.eval_seed)
-            normalized_score = env.get_normalized_score(eval_returns) * 100.0
+            policy_fn = partial(rebrac.get_action, train_state)
+            normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
             wandb.log({
                 "epoch": step,
-                "eval/return_mean": np.mean(eval_returns),
-                "eval/return_std": np.std(eval_returns),
-                "eval/normalized_score_mean": np.mean(normalized_score),
-                "eval/normalized_score_std": np.std(normalized_score)
+                "eval/normalized_score_mean": normalized_score,
             })
-            print(f"Step {step} | Eval Return Mean: {np.mean(eval_returns)} | Eval Normalized Score Mean: {np.mean(normalized_score)}")
+            print(f"Step {step} | Eval Normalized Score Mean: {normalized_score}")
     wandb.finish()
