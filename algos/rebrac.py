@@ -26,8 +26,11 @@ import d4rl
 import jax.numpy as jnp
 from typing import NamedTuple
 from functools import partial
-@dataclass
-class Config:
+from omegaconf import OmegaConf
+from pydantic import BaseModel
+
+
+class ReBRACConfig(BaseModel):
     # wandb params
     project: str = "ReBRAC"
     group: str = "rebrac"
@@ -61,15 +64,15 @@ class Config:
     # general params
     train_seed: int = 0
     eval_seed: int = 42
-
-    def __post_init__(self):
-        self.name = f"{self.name}-{self.dataset_name}-{str(uuid.uuid4())[:8]}"
     
     def __hash__(
         self,
     ):  # make config hashable to be specified as static_argnums in jax.jit.
         return hash(self.__repr__())
 
+
+conf_dict = OmegaConf.from_cli()
+config = ReBRACConfig(**conf_dict)
 
 from copy import deepcopy
 from tqdm.auto import trange
@@ -421,7 +424,7 @@ class ReBRAC(object):
         train_state: SACNState,
         batch: Dict[str, jax.Array],
         rng: jax.random.PRNGKey,
-        config: Config,
+        config: ReBRACConfig,
     ) -> Tuple[SACNState, jax.Array]:
         key, random_action_key = jax.random.split(rng, 2)
 
@@ -458,7 +461,7 @@ class ReBRAC(object):
             train_state: SACNState,
             batch: Dict[str, jax.Array],
             rng: jax.random.PRNGKey,
-            config: Config,
+            config: ReBRACConfig,
     ) -> Tuple[SACNState, jax.Array]:
         key, actions_key = jax.random.split(rng)
 
@@ -491,7 +494,7 @@ class ReBRAC(object):
         train_state: SACNState,
         buffer: ReplayBuffer,
         rng: jax.random.PRNGKey,
-        config: Config,
+        config: ReBRACConfig,
     ):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
@@ -541,9 +544,7 @@ def create_train_state(observation, action, config):
     return train_state
 
 
-@pyrallis.wrap()
-def main(config: Config):
-
+if __name__ == "__main__":
     wandb.init(
         config=config,
         project=config.project,
@@ -586,7 +587,4 @@ def main(config: Config):
                 "eval/normalized_score_std": np.std(normalized_score)
             })
             print(f"Step {step} | Eval Return Mean: {np.mean(eval_returns)} | Eval Normalized Score Mean: {np.mean(normalized_score)}")
-
-
-if __name__ == "__main__":
-    main()
+    wandb.finish()
