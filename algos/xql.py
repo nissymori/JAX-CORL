@@ -1,5 +1,5 @@
-# source https://github.com/Div99/XQL
-# https://arxiv.org/abs/2301.02328
+# Source: https://github.com/Div99/XQL
+# Paper: https://arxiv.org/abs/2301.02328
 import os
 import time
 from functools import partial
@@ -212,28 +212,32 @@ def get_dataset(
 
 
 def gumbel_rescale_loss(diff, alpha, max_clip=None):
-    """ Gumbel loss J: E[e^x - x - 1]. For stability to outliers, we scale the gradients with the max value over a batch
+    """Gumbel loss J: E[e^x - x - 1]. For stability to outliers, we scale the gradients with the max value over a batch
     and optionally clip the exponent. This has the effect of training with an adaptive lr.
     """
-    z = diff/alpha
+    z = diff / alpha
     if max_clip is not None:
-        z = jnp.minimum(z, max_clip) # clip max value
+        z = jnp.minimum(z, max_clip)  # clip max value
     max_z = jnp.max(z, axis=0)
     max_z = jnp.where(max_z < -1.0, -1.0, max_z)
     max_z = jax.lax.stop_gradient(max_z)  # Detach the gradients
-    loss = jnp.exp(z - max_z) - z*jnp.exp(-max_z) - jnp.exp(-max_z)  # scale by e^max_z
+    loss = (
+        jnp.exp(z - max_z) - z * jnp.exp(-max_z) - jnp.exp(-max_z)
+    )  # scale by e^max_z
     return loss
 
+
 def gumbel_log_loss(diff, alpha=1.0):
-    """ Gumbel loss J: E[e^x - x - 1]. We can calculate the log of Gumbel loss for stability, i.e. Log(J + 1)
+    """Gumbel loss J: E[e^x - x - 1]. We can calculate the log of Gumbel loss for stability, i.e. Log(J + 1)
     log_gumbel_loss: log((e^x - x - 1).mean() + 1)
     """
     diff = diff
-    x = diff/alpha
+    x = diff / alpha
     grad = grad_gumbel(x, alpha)
     # use analytic gradients to improve stability
     loss = jax.lax.stop_gradient(grad) * x
     return loss
+
 
 def grad_gumbel(x, alpha, clip_max=7):
     """Calculate grads of log gumbel_loss: (e^x - 1)/[(e^x - x - 1).mean() + 1]
@@ -252,8 +256,9 @@ def grad_gumbel(x, alpha, clip_max=7):
     # offsetted x
     x1 = x - x_max
 
-    grad = (jnp.exp(x1) - jnp.exp(-x_max)) / \
-        (jnp.mean(jnp.exp(x1) - x_orig * jnp.exp(-x_max), axis=0, keepdims=True))
+    grad = (jnp.exp(x1) - jnp.exp(-x_max)) / (
+        jnp.mean(jnp.exp(x1) - x_orig * jnp.exp(-x_max), axis=0, keepdims=True)
+    )
     return grad
 
 
@@ -321,11 +326,15 @@ class XQL(object):
             # add random actions to smooth loss computation (use 1/2(rho + Unif))
             times = config.sample_random_times
             random_action = jax.random.uniform(
-                rng1, shape=(times * actions.shape[0],
-                            actions.shape[1]),
-                minval=-1.0, maxval=1.0)
-            obs = jnp.concatenate([batch.observations, jnp.repeat(
-                batch.observations, times, axis=0)], axis=0)
+                rng1,
+                shape=(times * actions.shape[0], actions.shape[1]),
+                minval=-1.0,
+                maxval=1.0,
+            )
+            obs = jnp.concatenate(
+                [batch.observations, jnp.repeat(batch.observations, times, axis=0)],
+                axis=0,
+            )
             acts = jnp.concatenate([batch.actions, random_action], axis=0)
         else:
             obs = batch.observations
@@ -335,7 +344,7 @@ class XQL(object):
             std = config.noise_std
             noise = jax.random.normal(rng2, shape=(acts.shape[0], acts.shape[1]))
             noise = jnp.clip(noise * std, -0.5, 0.5)
-            acts = (batch.actions + noise)
+            acts = batch.actions + noise
             acts = jnp.clip(acts, -1, 1)
 
         q1, q2 = train_state.target_critic.apply_fn(
@@ -343,7 +352,9 @@ class XQL(object):
         )
         q = jnp.minimum(q1, q2)
 
-        def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> Tuple[jnp.ndarray, Dict]:
+        def value_loss_fn(
+            value_params: flax.core.FrozenDict[str, Any]
+        ) -> Tuple[jnp.ndarray, Dict]:
             v = train_state.value.apply_fn(value_params, obs)
 
             if config.vanilla:
@@ -352,12 +363,14 @@ class XQL(object):
                 if config.log_loss:
                     value_loss = gumbel_log_loss(q - v, alpha=config.loss_temp).mean()
                 else:
-                    value_loss = gumbel_rescale_loss(q - v, alpha=config.loss_temp, max_clip=config.max_clip).mean()
+                    value_loss = gumbel_rescale_loss(
+                        q - v, alpha=config.loss_temp, max_clip=config.max_clip
+                    ).mean()
             return value_loss
 
         new_value, value_loss = update_by_loss_grad(train_state.value, value_loss_fn)
         return train_state._replace(value=new_value), value_loss
-    
+
     def update_actor(
         self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
     ) -> Tuple["XQLTrainState", Dict]:
@@ -394,7 +407,9 @@ class XQL(object):
             batch = jax.tree_util.tree_map(lambda x: x[batch_indices], dataset)
 
             rng, subkey = jax.random.split(rng)
-            train_state, value_loss = self.update_value(train_state, batch, subkey, config)
+            train_state, value_loss = self.update_value(
+                train_state, batch, subkey, config
+            )
             train_state, actor_loss = self.update_actor(train_state, batch, config)
             train_state, critic_loss = self.update_critic(train_state, batch, config)
             new_target_critic = target_update(

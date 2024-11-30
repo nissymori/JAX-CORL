@@ -1,43 +1,39 @@
-# Copied and modified from https://github.com/tinkoff-ai/ReBRAC/tree/public-release
+# Source: https://github.com/tinkoff-ai/ReBRAC/tree/public-release
 # Paper: https://arxiv.org/abs/2305.09836
 
 import os
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
-import wandb
-import uuid
-import pyrallis
-
-import jax
-import numpy as np
-import optax
-
-from functools import partial
-from dataclasses import dataclass, asdict
-from flax.core import FrozenDict
-from typing import Dict, Tuple, Any, Callable
-from tqdm.auto import trange
-
-from flax.training.train_state import TrainState
 import math
+import uuid
+from dataclasses import asdict, dataclass
+from functools import partial
+from typing import Any, Callable, Dict, NamedTuple, Tuple
+
+import chex
+import d4rl
 import distrax
 import flax.linen as nn
-import chex
 import gym
-import d4rl
+import jax
 import jax.numpy as jnp
-from typing import NamedTuple
-from functools import partial
+import numpy as np
+import optax
+import pyrallis
+import wandb
+from flax.core import FrozenDict
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+from tqdm.auto import trange
 
 
 class ReBRACConfig(BaseModel):
     # wandb params
-    project: str = "ReBRAC"
-    group: str = "rebrac"
-    name: str = "rebrac"
+    algo: str = "ReBRAC"
+    project: str = "train-ReBRAC"
+    env_name: str = "halfcheetah-medium-expert-v2"
     # model params
     actor_learning_rate: float = 1e-3
     critic_learning_rate: float = 1e-3
@@ -55,7 +51,6 @@ class ReBRACConfig(BaseModel):
     policy_freq: int = 2
     normalize_q: bool = True
     # training params
-    env_name: str = "halfcheetah-medium-v2"
     batch_size: int = 256
     max_steps: int = 1000000
     data_size: int = 1000000
@@ -66,9 +61,7 @@ class ReBRACConfig(BaseModel):
     eval_episodes: int = 10
     eval_interval: int = 100000
     # general params
-    seed: int = 0
-    eval_seed: int = 42
-    
+
     def __hash__(
         self,
     ):  # make config hashable to be specified as static_argnums in jax.jit.
@@ -79,9 +72,9 @@ conf_dict = OmegaConf.from_cli()
 config = ReBRACConfig(**conf_dict)
 
 from copy import deepcopy
-from tqdm.auto import trange
-from typing import Sequence, Dict, Callable, Tuple, Union
+from typing import Callable, Dict, Sequence, Tuple, Union
 
+from tqdm.auto import trange
 
 default_kernel_init = nn.initializers.lecun_normal()
 default_bias_init = nn.initializers.zeros
@@ -93,14 +86,21 @@ def pytorch_init(fan_in: float):
     https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
     """
     bound = math.sqrt(1 / fan_in)
+
     def _init(key, shape, dtype):
-        return jax.random.uniform(key, shape=shape, minval=-bound, maxval=bound, dtype=dtype)
+        return jax.random.uniform(
+            key, shape=shape, minval=-bound, maxval=bound, dtype=dtype
+        )
+
     return _init
 
 
 def uniform_init(bound: float):
     def _init(key, shape, dtype):
-        return jax.random.uniform(key, shape=shape, minval=-bound, maxval=bound, dtype=dtype)
+        return jax.random.uniform(
+            key, shape=shape, minval=-bound, maxval=bound, dtype=dtype
+        )
+
     return _init
 
 
@@ -129,18 +129,30 @@ class DetActor(nn.Module):
         s_d, h_d = state.shape[-1], self.hidden_dim
         # Initialization as in the EDAC paper
         layers = [
-            nn.Dense(self.hidden_dim, kernel_init=pytorch_init(s_d), bias_init=nn.initializers.constant(0.1)),
+            nn.Dense(
+                self.hidden_dim,
+                kernel_init=pytorch_init(s_d),
+                bias_init=nn.initializers.constant(0.1),
+            ),
             nn.relu,
             nn.LayerNorm() if self.layernorm else identity,
         ]
         for _ in range(self.n_hiddens - 1):
             layers += [
-                nn.Dense(self.hidden_dim, kernel_init=pytorch_init(h_d), bias_init=nn.initializers.constant(0.1)),
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=pytorch_init(h_d),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
                 nn.relu,
                 nn.LayerNorm() if self.layernorm else identity,
             ]
         layers += [
-            nn.Dense(self.action_dim, kernel_init=uniform_init(1e-3), bias_init=uniform_init(1e-3)),
+            nn.Dense(
+                self.action_dim,
+                kernel_init=uniform_init(1e-3),
+                bias_init=uniform_init(1e-3),
+            ),
             nn.tanh,
         ]
         net = nn.Sequential(layers)
@@ -158,13 +170,21 @@ class Critic(nn.Module):
         s_d, a_d, h_d = state.shape[-1], action.shape[-1], self.hidden_dim
         # Initialization as in the EDAC paper
         layers = [
-            nn.Dense(self.hidden_dim, kernel_init=pytorch_init(s_d + a_d), bias_init=nn.initializers.constant(0.1)),
+            nn.Dense(
+                self.hidden_dim,
+                kernel_init=pytorch_init(s_d + a_d),
+                bias_init=nn.initializers.constant(0.1),
+            ),
             nn.relu,
             nn.LayerNorm() if self.layernorm else identity,
         ]
         for _ in range(self.n_hiddens - 1):
             layers += [
-                nn.Dense(self.hidden_dim, kernel_init=pytorch_init(h_d), bias_init=nn.initializers.constant(0.1)),
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=pytorch_init(h_d),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
                 nn.relu,
                 nn.LayerNorm() if self.layernorm else identity,
             ]
@@ -193,7 +213,9 @@ class EnsembleCritic(nn.Module):
             split_rngs={"params": True},
             axis_size=self.num_critics,
         )
-        q_values = ensemble(self.hidden_dim, self.layernorm, self.n_hiddens)(state, action)
+        q_values = ensemble(self.hidden_dim, self.layernorm, self.n_hiddens)(
+            state, action
+        )
         return q_values
 
 
@@ -231,7 +253,7 @@ def qlearning_dataset(env, dataset=None, terminate_on_end=False, **kwargs):
     if dataset is None:
         dataset = env.get_dataset(**kwargs)
 
-    N = dataset['rewards'].shape[0]
+    N = dataset["rewards"].shape[0]
     obs_ = []
     next_obs_ = []
     action_ = []
@@ -241,21 +263,21 @@ def qlearning_dataset(env, dataset=None, terminate_on_end=False, **kwargs):
 
     # The newer version of the dataset adds an explicit
     # timeouts field. Keep old method for backwards compatability.
-    use_timeouts = 'timeouts' in dataset
+    use_timeouts = "timeouts" in dataset
 
     episode_step = 0
     for i in range(N - 1):
-        obs = dataset['observations'][i].astype(np.float32)
-        new_obs = dataset['observations'][i + 1].astype(np.float32)
-        action = dataset['actions'][i].astype(np.float32)
-        new_action = dataset['actions'][i + 1].astype(np.float32)
-        reward = dataset['rewards'][i].astype(np.float32)
-        done_bool = bool(dataset['terminals'][i])
+        obs = dataset["observations"][i].astype(np.float32)
+        new_obs = dataset["observations"][i + 1].astype(np.float32)
+        action = dataset["actions"][i].astype(np.float32)
+        new_action = dataset["actions"][i + 1].astype(np.float32)
+        reward = dataset["rewards"][i].astype(np.float32)
+        done_bool = bool(dataset["terminals"][i])
 
         if use_timeouts:
-            final_timestep = dataset['timeouts'][i]
+            final_timestep = dataset["timeouts"][i]
         else:
-            final_timestep = (episode_step == env._max_episode_steps - 1)
+            final_timestep = episode_step == env._max_episode_steps - 1
         if (not terminate_on_end) and final_timestep:
             # Skip this transition and don't apply terminals on the last step of an episode
             episode_step = 0
@@ -272,12 +294,12 @@ def qlearning_dataset(env, dataset=None, terminate_on_end=False, **kwargs):
         episode_step += 1
 
     return {
-        'observations': np.array(obs_),
-        'actions': np.array(action_),
-        'next_observations': np.array(next_obs_),
-        'next_actions': np.array(next_action_),
-        'rewards': np.array(reward_),
-        'terminals': np.array(done_),
+        "observations": np.array(obs_),
+        "actions": np.array(action_),
+        "next_observations": np.array(next_obs_),
+        "next_actions": np.array(next_action_),
+        "rewards": np.array(reward_),
+        "terminals": np.array(done_),
     }
 
 
@@ -353,7 +375,9 @@ class ReBRAC(object):
             actions = train_state.actor.apply_fn(params, batch.observations)
 
             bc_penalty = ((actions - batch.actions) ** 2).sum(-1)
-            q_values = train_state.critic.apply_fn(train_state.critic.params, batch.observations, actions).min(0)
+            q_values = train_state.critic.apply_fn(
+                train_state.critic.params, batch.observations, actions
+            ).min(0)
             lmbda = 1
             if config.normalize_q:
                 lmbda = jax.lax.stop_gradient(1 / jax.numpy.abs(q_values).mean())
@@ -361,32 +385,39 @@ class ReBRAC(object):
             loss = (config.actor_bc_coef * bc_penalty - lmbda * q_values).mean()
 
             # logging stuff
-            random_actions = jax.random.uniform(random_action_key, shape=batch.actions.shape, minval=-1.0, maxval=1.0)
+            random_actions = jax.random.uniform(
+                random_action_key, shape=batch.actions.shape, minval=-1.0, maxval=1.0
+            )
             return loss
 
         actor_loss, grads = jax.value_and_grad(actor_loss_fn)(train_state.actor.params)
         new_actor = train_state.actor.apply_gradients(grads=grads)
 
         new_actor = new_actor.replace(
-            target_params=optax.incremental_update(train_state.actor.params, train_state.actor.target_params, config.tau)
+            target_params=optax.incremental_update(
+                train_state.actor.params, train_state.actor.target_params, config.tau
+            )
         )
         new_critic = train_state.critic.replace(
-            target_params=optax.incremental_update(train_state.critic.params, train_state.critic.target_params, config.tau)
+            target_params=optax.incremental_update(
+                train_state.critic.params, train_state.critic.target_params, config.tau
+            )
         )
 
         return train_state._replace(actor=new_actor, critic=new_critic), actor_loss
 
-
     def update_critic(
-            self,
-            train_state: ReBRACTrainState,
-            batch: Dict[str, jax.Array],
-            rng: jax.random.PRNGKey,
-            config: ReBRACConfig,
+        self,
+        train_state: ReBRACTrainState,
+        batch: Dict[str, jax.Array],
+        rng: jax.random.PRNGKey,
+        config: ReBRACConfig,
     ) -> Tuple[ReBRACTrainState, jax.Array]:
         key, actions_key = jax.random.split(rng)
 
-        next_actions = train_state.actor.apply_fn(train_state.actor.target_params, batch.next_observations)
+        next_actions = train_state.actor.apply_fn(
+            train_state.actor.target_params, batch.next_observations
+        )
         noise = jax.numpy.clip(
             (jax.random.normal(actions_key, next_actions.shape) * config.policy_noise),
             -config.noise_clip,
@@ -394,18 +425,24 @@ class ReBRAC(object):
         )
         next_actions = jax.numpy.clip(next_actions + noise, -1, 1)
         bc_penalty = ((next_actions - batch.next_actions) ** 2).sum(-1)
-        next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch.next_observations, next_actions).min(0)
+        next_q = train_state.critic.apply_fn(
+            train_state.critic.target_params, batch.next_observations, next_actions
+        ).min(0)
         next_q = next_q - config.critic_bc_coef * bc_penalty
 
         target_q = batch.rewards + (1 - batch.dones) * config.gamma * next_q
 
         def critic_loss_fn(critic_params):
             # [N, batch_size] - [1, batch_size]
-            q = train_state.critic.apply_fn(critic_params, batch.observations, batch.actions)
+            q = train_state.critic.apply_fn(
+                critic_params, batch.observations, batch.actions
+            )
             loss = ((q - target_q[None, ...]) ** 2).mean(1).sum(0)
             return loss
 
-        critic_loss, grads = jax.value_and_grad(critic_loss_fn)(train_state.critic.params)
+        critic_loss, grads = jax.value_and_grad(critic_loss_fn)(
+            train_state.critic.params
+        )
         new_critic = train_state.critic.apply_gradients(grads=grads)
         return train_state._replace(critic=new_critic), critic_loss
 
@@ -419,12 +456,21 @@ class ReBRAC(object):
     ):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
-            indices = jax.random.randint(batch_rng, shape=(config.batch_size,), minval=0, maxval=len(dataset.observations))
+            indices = jax.random.randint(
+                batch_rng,
+                shape=(config.batch_size,),
+                minval=0,
+                maxval=len(dataset.observations),
+            )
             batch = jax.tree_util.tree_map(lambda x: x[indices], dataset)
 
-            train_state, critic_loss = self.update_critic(train_state, batch, critic_rng, config)
+            train_state, critic_loss = self.update_critic(
+                train_state, batch, critic_rng, config
+            )
             if _ % config.policy_freq == 0:
-                train_state, actor_loss = self.update_actor(train_state, batch, actor_rng, config)
+                train_state, actor_loss = self.update_actor(
+                    train_state, batch, actor_rng, config
+                )
 
         return train_state, {"critic_loss": critic_loss, "actor_loss": actor_loss}
 
@@ -439,8 +485,12 @@ def create_train_state(observation, action, config):
 
     action_dim = action.shape[-1]
 
-    actor_module = DetActor(action_dim=action_dim, hidden_dim=config.hidden_dim, layernorm=config.actor_ln,
-                            n_hiddens=config.actor_n_hiddens)
+    actor_module = DetActor(
+        action_dim=action_dim,
+        hidden_dim=config.hidden_dim,
+        layernorm=config.actor_ln,
+        n_hiddens=config.actor_n_hiddens,
+    )
     actor = ActorTrainState.create(
         apply_fn=actor_module.apply,
         params=actor_module.init(actor_key, observation),
@@ -448,8 +498,12 @@ def create_train_state(observation, action, config):
         tx=optax.adam(learning_rate=config.actor_learning_rate),
     )
 
-    critic_module = EnsembleCritic(hidden_dim=config.hidden_dim, num_critics=2, layernorm=config.critic_ln,
-                                   n_hiddens=config.critic_n_hiddens)
+    critic_module = EnsembleCritic(
+        hidden_dim=config.hidden_dim,
+        num_critics=2,
+        layernorm=config.critic_ln,
+        n_hiddens=config.critic_n_hiddens,
+    )
     critic = CriticTrainState.create(
         apply_fn=critic_module.apply,
         params=critic_module.init(critic_key, observation, action),
@@ -494,7 +548,9 @@ if __name__ == "__main__":
     dataset, obs_mean, obs_std = get_dataset(env, config)
     key = jax.random.PRNGKey(seed=config.seed)
     example_batch = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_train_state(example_batch.observations, example_batch.actions, config)
+    train_state = create_train_state(
+        example_batch.observations, example_batch.actions, config
+    )
 
     algo = ReBRAC()
 
@@ -507,10 +563,14 @@ if __name__ == "__main__":
 
         if step % eval_interval == 0 or step == num_steps - 1:
             policy_fn = partial(algo.get_action, train_state=train_state)
-            normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
-            wandb.log({
-                "epoch": step,
-                "eval/normalized_score_mean": normalized_score,
-            })
+            normalized_score = evaluate(
+                policy_fn, env, config.eval_episodes, obs_mean, obs_std
+            )
+            wandb.log(
+                {
+                    "epoch": step,
+                    "eval/normalized_score_mean": normalized_score,
+                }
+            )
             print(f"Step {step} | Eval Normalized Score Mean: {normalized_score}")
     wandb.finish()
