@@ -52,7 +52,7 @@ class ReBRACConfig(BaseModel):
     policy_freq: int = 2
     normalize_q: bool = True
     # training params
-    dataset_name: str = "halfcheetah-medium-v2"
+    env_name: str = "halfcheetah-medium-v2"
     batch_size: int = 256
     max_steps: int = 1000000
     normalize_reward: bool = False
@@ -103,36 +103,6 @@ class Metrics:
 
 def normalize(arr: jax.Array, mean: jax.Array, std: jax.Array, eps: float = 1e-8) -> jax.Array:
     return (arr - mean) / (std + eps)
-
-
-def make_env(env_name: str, seed: int) -> gym.Env:
-    env = gym.make(env_name)
-    env.seed(seed)
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
-    return env
-
-
-def wrap_env(
-    env: gym.Env,
-    state_mean: Union[np.ndarray, float] = 0.0,
-    state_std: Union[np.ndarray, float] = 1.0,
-    reward_scale: float = 1.0,
-) -> gym.Env:
-    # PEP 8: E731 do not assign a lambda expression, use a def
-    def normalize_state(state):
-        return (
-            state - state_mean
-        ) / state_std  # epsilon should be already added in std.
-
-    def scale_reward(reward):
-        # Please be careful, here reward is multiplied by scale!
-        return reward_scale * reward
-
-    env = gym.wrappers.TransformObservation(env, normalize_state)
-    if reward_scale != 1.0:
-        env = gym.wrappers.TransformReward(env, scale_reward)
-    return env
 
 
 def evaluate(env: gym.Env, params, action_fn: Callable, num_episodes: int, seed: int) -> np.ndarray:
@@ -245,9 +215,9 @@ class ReplayBuffer:
     mean: float = 0
     std: float = 1
 
-    def create_from_d4rl(self, dataset_name: str, normalize_reward: bool = False,
+    def create_from_d4rl(self, env_name: str, normalize_reward: bool = False,
                          normalize: bool = False):
-        d4rl_data = qlearning_dataset(gym.make(dataset_name))
+        d4rl_data = qlearning_dataset(gym.make(env_name))
         buffer = {
             "states": jnp.asarray(d4rl_data["observations"], dtype=jnp.float32),
             "actions": jnp.asarray(d4rl_data["actions"], dtype=jnp.float32),
@@ -265,7 +235,7 @@ class ReplayBuffer:
                 buffer["next_states"], self.mean, self.std
             )
         if normalize_reward:
-            buffer["rewards"] = ReplayBuffer.normalize_reward(dataset_name, buffer["rewards"])
+            buffer["rewards"] = ReplayBuffer.normalize_reward(env_name, buffer["rewards"])
         self.data = buffer
 
     @property
@@ -284,8 +254,8 @@ class ReplayBuffer:
         return mean, std
 
     @staticmethod
-    def normalize_reward(dataset_name: str, rewards: jax.Array) -> jax.Array:
-        if "antmaze" in dataset_name:
+    def normalize_reward(env_name: str, rewards: jax.Array) -> jax.Array:
+        if "antmaze" in env_name:
             return rewards * 100.0  # like in LAPO
         else:
             raise NotImplementedError("Reward normalization is implemented only for AntMaze yet!")
@@ -554,9 +524,8 @@ if __name__ == "__main__":
     )
     wandb.mark_preempting()
     buffer = ReplayBuffer()
-    buffer.create_from_d4rl(config.dataset_name, config.normalize_reward, config.normalize_states)
-    eval_env = make_env(config.dataset_name, seed=config.eval_seed)
-    eval_env = wrap_env(eval_env, buffer.mean, buffer.std)
+    buffer.create_from_d4rl(config.env_name, config.normalize_reward, config.normalize_states)
+    env = gym.make(config.env_name)
 
     key = jax.random.PRNGKey(seed=config.train_seed)
     train_state = create_train_state(buffer.data["states"][0], buffer.data["actions"][0], config)
@@ -576,9 +545,9 @@ if __name__ == "__main__":
         wandb.log({"epoch": step, **{f"ReBRAC/{k}": v for k, v in info.items()}})
 
         if step % eval_interval == 0 or step == num_steps - 1:
-            eval_returns = evaluate(eval_env, train_state.actor.params, actor_action_fn, config.eval_episodes,
+            eval_returns = evaluate(env, train_state.actor.params, actor_action_fn, config.eval_episodes,
                                     seed=config.eval_seed)
-            normalized_score = eval_env.get_normalized_score(eval_returns) * 100.0
+            normalized_score = env.get_normalized_score(eval_returns) * 100.0
             wandb.log({
                 "epoch": step,
                 "eval/return_mean": np.mean(eval_returns),
