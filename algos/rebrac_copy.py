@@ -24,7 +24,6 @@ import chex
 import gym
 import d4rl
 import jax.numpy as jnp
-from typing import NamedTuple
 
 @dataclass
 class Config:
@@ -405,27 +404,23 @@ class ActorTrainState(TrainState):
     target_params: FrozenDict
 
 
-class SACNState(NamedTuple):
-    actor: TrainState
-    critic: CriticTrainState
-
-
 def update_actor(
         key: jax.random.PRNGKey,
-        train_state: SACNState,
+        actor: TrainState,
+        critic: TrainState,
         batch: Dict[str, jax.Array],
         beta: float,
         tau: float,
         normalize_q: bool,
         metrics: Metrics,
-) -> Tuple[jax.random.PRNGKey, SACNState, Metrics]:
+) -> Tuple[jax.random.PRNGKey, TrainState, jax.Array, Metrics]:
     key, random_action_key = jax.random.split(key, 2)
 
     def actor_loss_fn(params):
-        actions = train_state.actor.apply_fn(params, batch["states"])
+        actions = actor.apply_fn(params, batch["states"])
 
         bc_penalty = ((actions - batch["actions"]) ** 2).sum(-1)
-        q_values = train_state.critic.apply_fn(train_state.critic.params, batch["states"], actions).min(0)
+        q_values = critic.apply_fn(critic.params, batch["states"], actions).min(0)
         lmbda = 1
         if normalize_q:
             lmbda = jax.lax.stop_gradient(1 / jax.numpy.abs(q_values).mean())
@@ -442,22 +437,23 @@ def update_actor(
         })
         return loss, new_metrics
 
-    grads, new_metrics = jax.grad(actor_loss_fn, has_aux=True)(train_state.actor.params)
-    new_actor = train_state.actor.apply_gradients(grads=grads)
+    grads, new_metrics = jax.grad(actor_loss_fn, has_aux=True)(actor.params)
+    new_actor = actor.apply_gradients(grads=grads)
 
     new_actor = new_actor.replace(
-        target_params=optax.incremental_update(train_state.actor.params, train_state.actor.target_params, tau)
+        target_params=optax.incremental_update(actor.params, actor.target_params, tau)
     )
-    new_critic = train_state.critic.replace(
-        target_params=optax.incremental_update(train_state.critic.params, train_state.critic.target_params, tau)
+    new_critic = critic.replace(
+        target_params=optax.incremental_update(critic.params, critic.target_params, tau)
     )
 
-    return key, train_state._replace(actor=new_actor, critic=new_critic), new_metrics
+    return key, new_actor, new_critic, new_metrics
 
 
 def update_critic(
         key: jax.random.PRNGKey,
-        train_state: SACNState,
+        actor: TrainState,
+        critic: CriticTrainState,
         batch: Dict[str, jax.Array],
         gamma: float,
         beta: float,
@@ -465,10 +461,10 @@ def update_critic(
         policy_noise: float,
         noise_clip: float,
         metrics: Metrics,
-) -> Tuple[jax.random.PRNGKey, SACNState, Metrics]:
+) -> Tuple[jax.random.PRNGKey, TrainState, Metrics]:
     key, actions_key = jax.random.split(key)
 
-    next_actions = train_state.actor.apply_fn(train_state.actor.target_params, batch["next_states"])
+    next_actions = actor.apply_fn(actor.target_params, batch["next_states"])
     noise = jax.numpy.clip(
         (jax.random.normal(actions_key, next_actions.shape) * policy_noise),
         -noise_clip,
@@ -476,30 +472,31 @@ def update_critic(
     )
     next_actions = jax.numpy.clip(next_actions + noise, -1, 1)
     bc_penalty = ((next_actions - batch["next_actions"]) ** 2).sum(-1)
-    next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch["next_states"], next_actions).min(0)
+    next_q = critic.apply_fn(critic.target_params, batch["next_states"], next_actions).min(0)
     next_q = next_q - beta * bc_penalty
 
     target_q = batch["rewards"] + (1 - batch["dones"]) * gamma * next_q
 
     def critic_loss_fn(critic_params):
         # [N, batch_size] - [1, batch_size]
-        q = train_state.critic.apply_fn(critic_params, batch["states"], batch["actions"])
+        q = critic.apply_fn(critic_params, batch["states"], batch["actions"])
         q_min = q.min(0).mean()
         loss = ((q - target_q[None, ...]) ** 2).mean(1).sum(0)
         return loss, q_min
 
-    (loss, q_min), grads = jax.value_and_grad(critic_loss_fn, has_aux=True)(train_state.critic.params)
-    new_critic = train_state.critic.apply_gradients(grads=grads)
+    (loss, q_min), grads = jax.value_and_grad(critic_loss_fn, has_aux=True)(critic.params)
+    new_critic = critic.apply_gradients(grads=grads)
     new_metrics = metrics.update({
         "critic_loss": loss,
         "q_min": q_min,
     })
-    return key, train_state._replace(critic=new_critic), new_metrics
+    return key, new_critic, new_metrics
 
 
 def update_td3(
         key: jax.random.PRNGKey,
-        train_state: SACNState,
+        actor: TrainState,
+        critic: CriticTrainState,
         batch: Dict[str, Any],
         metrics: Metrics,
         gamma: float,
@@ -510,18 +507,19 @@ def update_td3(
         noise_clip: float,
         normalize_q: bool,
 ):
-    key, train_state, new_metrics = update_critic(
-        key, train_state, batch, gamma, critic_bc_coef, tau, policy_noise, noise_clip, metrics
+    key, new_critic, new_metrics = update_critic(
+        key, actor, critic, batch, gamma, critic_bc_coef, tau, policy_noise, noise_clip, metrics
     )
-    key, train_state, new_metrics = update_actor(key, train_state,
-                                                           batch, actor_bc_coef, tau, normalize_q,
+    key, new_actor, new_critic, new_metrics = update_actor(key, actor,
+                                                           new_critic, batch, actor_bc_coef, tau, normalize_q,
                                                            new_metrics)
-    return key, train_state, new_metrics
+    return key, new_actor, new_critic, new_metrics
 
 
 def update_td3_no_targets(
         key: jax.random.PRNGKey,
-        train_state: SACNState,
+        actor: TrainState,
+        critic: CriticTrainState,
         batch: Dict[str, Any],
         gamma: float,
         metrics: Metrics,
@@ -531,10 +529,10 @@ def update_td3_no_targets(
         policy_noise: float,
         noise_clip: float,
 ):
-    key, train_state, new_metrics = update_critic(
-        key, train_state, batch, gamma, critic_bc_coef, tau, policy_noise, noise_clip, metrics
+    key, new_critic, new_metrics = update_critic(
+        key, actor, critic, batch, gamma, critic_bc_coef, tau, policy_noise, noise_clip, metrics
     )
-    return key, train_state, new_metrics
+    return key, actor, new_critic, new_metrics
 
 
 def action_fn(actor: TrainState) -> Callable:
@@ -588,8 +586,6 @@ def main(config: Config):
         tx=optax.adam(learning_rate=config.critic_learning_rate),
     )
 
-    train_state = SACNState(actor=actor, critic=critic)
-
     update_td3_partial = partial(
         update_td3, gamma=config.gamma,
         actor_bc_coef=config.actor_bc_coef, critic_bc_coef=config.critic_bc_coef, tau=config.tau,
@@ -611,20 +607,22 @@ def main(config: Config):
 
         full_update = partial(update_td3_partial,
                               key=key,
-                              train_state=carry["train_state"],
+                              actor=carry["actor"],
+                              critic=carry["critic"],
                               batch=batch,
                               metrics=carry["metrics"])
 
         update = partial(update_td3_no_targets_partial,
                          key=key,
-                         train_state=carry["train_state"],
+                         actor=carry["actor"],
+                         critic=carry["critic"],
                          batch=batch,
                          metrics=carry["metrics"])
 
-        key, new_train_state, new_metrics = jax.lax.cond(carry["delayed_updates"][i], full_update, update)
+        key, new_actor, new_critic, new_metrics = jax.lax.cond(update_carry["delayed_updates"][i], full_update, update)
 
         carry.update(
-            key=key, train_state=new_train_state, metrics=new_metrics
+            key=key, actor=new_actor, critic=new_critic, metrics=new_metrics
         )
         return carry
 
@@ -636,7 +634,8 @@ def main(config: Config):
     # shared carry for update loops
     update_carry = {
         "key": key,
-        "train_state": train_state,
+        "actor": actor,
+        "critic": critic,
         "buffer": buffer,
         "delayed_updates": jax.numpy.equal(
             jax.numpy.arange(config.num_updates_on_epoch) % config.policy_freq, 0
@@ -663,7 +662,7 @@ def main(config: Config):
         wandb.log({"epoch": epoch, **{f"ReBRAC/{k}": v for k, v in mean_metrics.items()}})
 
         if epoch % config.eval_every == 0 or epoch == config.num_epochs - 1:
-            eval_returns = evaluate(eval_env, update_carry["train_state"].actor.params, actor_action_fn, config.eval_episodes,
+            eval_returns = evaluate(eval_env, update_carry["actor"].params, actor_action_fn, config.eval_episodes,
                                     seed=config.eval_seed)
             normalized_score = eval_env.get_normalized_score(eval_returns) * 100.0
             wandb.log({
