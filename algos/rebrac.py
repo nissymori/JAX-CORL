@@ -496,17 +496,17 @@ if __name__ == "__main__":
     example_batch = jax.tree_util.tree_map(lambda x: x[0], dataset)
     train_state = create_train_state(example_batch.observations, example_batch.actions, config)
 
-    rebrac = ReBRAC()
+    algo = ReBRAC()
 
     num_steps = int(config.max_steps / config.n_jitted_updates)
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
     for step in trange(num_steps, desc="ReBRAC Steps"):
         key, subkey = jax.random.split(key)
-        train_state, info = rebrac.update_n_times(train_state, dataset, subkey, config)
+        train_state, info = algo.update_n_times(train_state, dataset, subkey, config)
         wandb.log({"epoch": step, **{f"ReBRAC/{k}": v for k, v in info.items()}})
 
         if step % eval_interval == 0 or step == num_steps - 1:
-            policy_fn = partial(rebrac.get_action, train_state)
+            policy_fn = partial(algo.get_action, train_state=train_state)
             normalized_score = evaluate(policy_fn, env, config.eval_episodes, obs_mean, obs_std)
             wandb.log({
                 "epoch": step,
