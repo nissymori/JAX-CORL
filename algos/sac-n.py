@@ -1,30 +1,28 @@
+# Source: https://github.com/Howuhh/sac-n-jax
+# Paper: https://arxiv.org/abs/2110.01548
 import copy
 import os
-import gym
-import d4rl
-import pyrallis
-import numpy as np
-import wandb
 import uuid
+from dataclasses import asdict, dataclass
+from functools import partial
+from typing import Any, Callable, Dict, NamedTuple, Tuple
 
-import jax
 import chex
-import optax
+import d4rl
 import distrax
-import jax.numpy as jnp
-
 import flax
 import flax.linen as nn
-
-from dataclasses import dataclass, asdict
-from typing import Dict, Tuple, Any
-from tqdm.auto import trange
-
+import gym
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+import pyrallis
+import wandb
 from flax.training.train_state import TrainState
-from typing import NamedTuple
-from functools import partial
 from omegaconf import OmegaConf
 from pydantic import BaseModel
+from tqdm.auto import trange
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
@@ -32,8 +30,8 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 class SACNConfig(BaseModel):
     # wandb params
     algo: str = "SAC-N"
-    project: str = "train-SAC-N"    
-    env_name: str = "halfcheetah-medium"
+    project: str = "train-SAC-N"
+    env_name: str = "halfcheetah-medium-expert-v2"
     # model params
     hidden_dim: int = 256
     num_critics: int = 10
@@ -54,10 +52,10 @@ class SACNConfig(BaseModel):
     eval_interval: int = 50000
     # general params
     seed: int = 10
-    eval_seed: int = 42
-    
+
     def __hash__(self):
         return hash(self.__repr__())
+
 
 conf_dict = OmegaConf.from_cli()
 config = SACNConfig(**conf_dict)
@@ -67,7 +65,9 @@ class CriticTrainState(TrainState):
     target_params: flax.core.FrozenDict
 
     def soft_update(self, tau):
-        new_target_params = optax.incremental_update(self.params, self.target_params, tau)
+        new_target_params = optax.incremental_update(
+            self.params, self.target_params, tau
+        )
         return self.replace(target_params=new_target_params)
 
 
@@ -84,7 +84,10 @@ class TanhNormal(distrax.Transformed):
 
 def uniform_init(bound: float):
     def _init(key, shape, dtype):
-        return jax.random.uniform(key, shape=shape, minval=-bound, maxval=bound, dtype=dtype)
+        return jax.random.uniform(
+            key, shape=shape, minval=-bound, maxval=bound, dtype=dtype
+        )
+
     return _init
 
 
@@ -95,16 +98,38 @@ class Actor(nn.Module):
 
     @nn.compact
     def __call__(self, state):
-        net = nn.Sequential([
-            nn.Dense(self.hidden_dim, kernel_init=nn.initializers.he_uniform(), bias_init=nn.initializers.constant(0.1)),
-            nn.relu,
-            nn.Dense(self.hidden_dim, kernel_init=nn.initializers.he_uniform(), bias_init=nn.initializers.constant(0.1)),
-            nn.relu,
-            nn.Dense(self.hidden_dim, kernel_init=nn.initializers.he_uniform(), bias_init=nn.initializers.constant(0.1)),
-            nn.relu,
-        ])
-        log_sigma_net = nn.Dense(self.action_dim, kernel_init=uniform_init(1e-3), bias_init=uniform_init(1e-3))
-        mu_net = nn.Dense(self.action_dim, kernel_init=uniform_init(1e-3), bias_init=uniform_init(1e-3))
+        net = nn.Sequential(
+            [
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=nn.initializers.he_uniform(),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
+                nn.relu,
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=nn.initializers.he_uniform(),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
+                nn.relu,
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=nn.initializers.he_uniform(),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
+                nn.relu,
+            ]
+        )
+        log_sigma_net = nn.Dense(
+            self.action_dim,
+            kernel_init=uniform_init(1e-3),
+            bias_init=uniform_init(1e-3),
+        )
+        mu_net = nn.Dense(
+            self.action_dim,
+            kernel_init=uniform_init(1e-3),
+            bias_init=uniform_init(1e-3),
+        )
 
         trunk = net(state)
         mu, log_sigma = mu_net(trunk), log_sigma_net(trunk)
@@ -119,15 +144,31 @@ class Critic(nn.Module):
 
     @nn.compact
     def __call__(self, state, action):
-        network = nn.Sequential([
-            nn.Dense(self.hidden_dim, kernel_init=nn.initializers.he_uniform(), bias_init=nn.initializers.constant(0.1)),
-            nn.relu,
-            nn.Dense(self.hidden_dim, kernel_init=nn.initializers.he_uniform(), bias_init=nn.initializers.constant(0.1)),
-            nn.relu,
-            nn.Dense(self.hidden_dim, kernel_init=nn.initializers.he_uniform(), bias_init=nn.initializers.constant(0.1)),
-            nn.relu,
-            nn.Dense(1, kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3))
-        ])
+        network = nn.Sequential(
+            [
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=nn.initializers.he_uniform(),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
+                nn.relu,
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=nn.initializers.he_uniform(),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
+                nn.relu,
+                nn.Dense(
+                    self.hidden_dim,
+                    kernel_init=nn.initializers.he_uniform(),
+                    bias_init=nn.initializers.constant(0.1),
+                ),
+                nn.relu,
+                nn.Dense(
+                    1, kernel_init=uniform_init(3e-3), bias_init=uniform_init(3e-3)
+                ),
+            ]
+        )
         state_action = jnp.hstack([state, action])
         out = network(state_action).squeeze(-1)
         return out
@@ -145,7 +186,7 @@ class EnsembleCritic(nn.Module):
             out_axes=0,
             variable_axes={"params": 0},
             split_rngs={"params": True},
-            axis_size=self.num_critics
+            axis_size=self.num_critics,
         )
         q_values = ensemble(self.hidden_dim)(state, action)
         return q_values
@@ -156,7 +197,9 @@ class Alpha(nn.Module):
 
     @nn.compact
     def __call__(self):
-        log_alpha = self.param("log_alpha", lambda key: jnp.array([jnp.log(self.init_value)]))
+        log_alpha = self.param(
+            "log_alpha", lambda key: jnp.array([jnp.log(self.init_value)])
+        )
         return jnp.exp(log_alpha)
 
 
@@ -212,7 +255,6 @@ def get_dataset(
     return dataset, obs_mean, obs_std
 
 
-
 class SACNTrainState(NamedTuple):
     actor: TrainState
     critic: CriticTrainState
@@ -222,36 +264,37 @@ class SACNTrainState(NamedTuple):
 class SACN(object):
     # SAC-N losses
     def update_actor(
-            self,
-            train_state: SACNTrainState,
-            batch: Transition,
-            rng: jax.random.PRNGKey,
-            config: SACNConfig
+        self,
+        train_state: SACNTrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: SACNConfig,
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
         def actor_loss_fn(actor_params):
             actions_dist = train_state.actor.apply_fn(actor_params, batch.observations)
             actions, actions_logp = actions_dist.sample_and_log_prob(seed=rng)
 
-            q_values = train_state.critic.apply_fn(train_state.critic.params, batch.observations, actions).min(0)
-            loss = (train_state.alpha.apply_fn(train_state.alpha.params) * actions_logp.sum(-1) - q_values).mean()
+            q_values = train_state.critic.apply_fn(
+                train_state.critic.params, batch.observations, actions
+            ).min(0)
+            loss = (
+                train_state.alpha.apply_fn(train_state.alpha.params)
+                * actions_logp.sum(-1)
+                - q_values
+            ).mean()
 
             batch_entropy = -actions_logp.sum(-1).mean()
             return loss, batch_entropy
 
-        (loss, batch_entropy), grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(train_state.actor.params)
+        (loss, batch_entropy), grads = jax.value_and_grad(actor_loss_fn, has_aux=True)(
+            train_state.actor.params
+        )
         new_actor = train_state.actor.apply_gradients(grads=grads)
-        info = {
-            "batch_entropy": batch_entropy,
-            "actor_loss": loss
-        }
+        info = {"batch_entropy": batch_entropy, "actor_loss": loss}
         return train_state._replace(actor=new_actor), info
 
-
     def update_alpha(
-            self,
-            train_state: SACNTrainState,
-            entropy: float,
-            config: SACNConfig
+        self, train_state: SACNTrainState, entropy: float, config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
         def alpha_loss_fn(alpha_params):
             alpha_value = train_state.alpha.apply_fn(alpha_params)
@@ -262,68 +305,87 @@ class SACN(object):
         new_alpha = train_state.alpha.apply_gradients(grads=grads)
         info = {
             "alpha": train_state.alpha.apply_fn(train_state.alpha.params),
-            "alpha_loss": loss
+            "alpha_loss": loss,
         }
         return train_state._replace(alpha=new_alpha), info
 
-
     def update_critic(
-            self,
-            train_state: SACNTrainState,
-            batch: Transition,
-            rng: jax.random.PRNGKey,
-            config: SACNConfig
+        self,
+        train_state: SACNTrainState,
+        batch: Transition,
+        rng: jax.random.PRNGKey,
+        config: SACNConfig,
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
-        next_actions_dist = train_state.actor.apply_fn(train_state.actor.params, batch.next_observations)
-        next_actions, next_actions_logp = next_actions_dist.sample_and_log_prob(seed=rng)
+        next_actions_dist = train_state.actor.apply_fn(
+            train_state.actor.params, batch.next_observations
+        )
+        next_actions, next_actions_logp = next_actions_dist.sample_and_log_prob(
+            seed=rng
+        )
 
-        next_q = train_state.critic.apply_fn(train_state.critic.target_params, batch.next_observations, next_actions).min(0)
-        next_q = next_q - train_state.alpha.apply_fn(train_state.alpha.params) * next_actions_logp.sum(-1)
+        next_q = train_state.critic.apply_fn(
+            train_state.critic.target_params, batch.next_observations, next_actions
+        ).min(0)
+        next_q = next_q - train_state.alpha.apply_fn(
+            train_state.alpha.params
+        ) * next_actions_logp.sum(-1)
         target_q = batch.rewards + (1 - batch.dones) * config.gamma * next_q
 
         def critic_loss_fn(critic_params):
             # [N, batch_size] - [1, batch_size]
-            q = train_state.critic.apply_fn(critic_params, batch.observations, batch.actions)
+            q = train_state.critic.apply_fn(
+                critic_params, batch.observations, batch.actions
+            )
             loss = ((q - target_q[None, ...]) ** 2).mean(1).sum(0)
             return loss
 
         loss, grads = jax.value_and_grad(critic_loss_fn)(train_state.critic.params)
-        new_critic = train_state.critic.apply_gradients(grads=grads).soft_update(tau=config.tau)
-        info = {
-            "critic_loss": loss
-        }
+        new_critic = train_state.critic.apply_gradients(grads=grads).soft_update(
+            tau=config.tau
+        )
+        info = {"critic_loss": loss}
         return train_state._replace(critic=new_critic), info
-    
 
     @partial(jax.jit, static_argnums=(0, 4))
     def update_n_times(
-            self,
-            train_state: SACNTrainState,
-            dataset: Transition,
-            rng: jax.random.PRNGKey,
-            config: SACNConfig
+        self,
+        train_state: SACNTrainState,
+        dataset: Transition,
+        rng: jax.random.PRNGKey,
+        config: SACNConfig,
     ):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, actor_rng, critic_rng = jax.random.split(rng, 4)
-            indices = jax.random.randint(batch_rng, shape=(config.batch_size,), minval=0, maxval=dataset.observations.shape[0])
+            indices = jax.random.randint(
+                batch_rng,
+                shape=(config.batch_size,),
+                minval=0,
+                maxval=dataset.observations.shape[0],
+            )
             batch = jax.tree_util.tree_map(lambda arr: arr[indices], dataset)
 
-            train_state, actor_info = self.update_actor(train_state, batch, actor_rng, config)
-            train_state, alpha_info = self.update_alpha(train_state, actor_info["batch_entropy"], config)
-            train_state, critic_info = self.update_critic(train_state, batch, critic_rng, config)
+            train_state, actor_info = self.update_actor(
+                train_state, batch, actor_rng, config
+            )
+            train_state, alpha_info = self.update_alpha(
+                train_state, actor_info["batch_entropy"], config
+            )
+            train_state, critic_info = self.update_critic(
+                train_state, batch, critic_rng, config
+            )
         return train_state, {
             "critic_loss": critic_info["critic_loss"],
             "actor_loss": actor_info["actor_loss"],
             "alpha_loss": alpha_info["alpha_loss"],
             "alpha": alpha_info["alpha"],
-            "batch_entropy": actor_info["batch_entropy"]
+            "batch_entropy": actor_info["batch_entropy"],
         }
-    
+
     @partial(jax.jit, static_argnums=(0))
     def get_action(
-            self,
-            train_state: SACNTrainState,
-            obs: jax.Array,
+        self,
+        train_state: SACNTrainState,
+        obs: jax.Array,
     ) -> jax.Array:
         dist = train_state.actor.apply_fn(train_state.actor.params, obs)
         action = dist.mean()
@@ -351,9 +413,7 @@ def evaluate(
 
 
 def create_train_state(
-    observations: jax.Array,
-    actions: jax.Array,
-    config: SACNConfig
+    observations: jax.Array, actions: jax.Array, config: SACNConfig
 ) -> SACNTrainState:
     key = jax.random.PRNGKey(seed=config.seed)
     key, actor_key, critic_key, alpha_key = jax.random.split(key, 4)
@@ -367,7 +427,9 @@ def create_train_state(
         tx=optax.adam(learning_rate=config.actor_learning_rate),
     )
 
-    critic_module = EnsembleCritic(hidden_dim=config.hidden_dim, num_critics=config.num_critics)
+    critic_module = EnsembleCritic(
+        hidden_dim=config.hidden_dim, num_critics=config.num_critics
+    )
     critic = CriticTrainState.create(
         apply_fn=critic_module.apply,
         params=critic_module.init(critic_key, init_state, init_action),
@@ -379,7 +441,7 @@ def create_train_state(
     alpha = TrainState.create(
         apply_fn=alpha_module.apply,
         params=alpha_module.init(alpha_key),
-        tx=optax.adam(learning_rate=config.alpha_learning_rate)
+        tx=optax.adam(learning_rate=config.alpha_learning_rate),
     )
     train_state = SACNTrainState(actor=actor, critic=critic, alpha=alpha)
     return train_state
@@ -402,9 +464,11 @@ if __name__ == "__main__":
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
     for _ in trange(num_steps):
         rng, update_rng = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(train_state, dataset, update_rng, config)
+        train_state, update_info = algo.update_n_times(
+            train_state, dataset, update_rng, config
+        )
         wandb.log({"step": _, **update_info})
-
+        
         if _ % eval_interval == 0:
             policy_fn = partial(algo.get_action, train_state=train_state)
             normalized_score = evaluate(
@@ -415,10 +479,14 @@ if __name__ == "__main__":
                 obs_std=obs_std,
             )
 
-            wandb.log({
-                "step": _,
-                "eval/normalized_score_mean": np.mean(normalized_score),
-                "eval/normalized_score_std": np.std(normalized_score)
-            })
-            print(f"Epoch {_}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}")
+            wandb.log(
+                {
+                    "step": _,
+                    "eval/normalized_score_mean": np.mean(normalized_score),
+                    "eval/normalized_score_std": np.std(normalized_score),
+                }
+            )
+            print(
+                f"Epoch {_}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}"
+            )
     wandb.finish()
