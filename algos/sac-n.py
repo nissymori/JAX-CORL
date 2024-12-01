@@ -414,8 +414,8 @@ def evaluate(
 
 def create_sacn_train_state(
     rng: jax.random.PRNGKey,
-    observations: jax.Array,
-    actions: jax.Array,
+    observations: jax.ndarray,
+    actions: jax.ndarray,
     config: SACNConfig,
 ) -> SACNTrainState:
     key, actor_key, critic_key, alpha_key = jax.random.split(rng, 4)

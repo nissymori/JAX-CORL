@@ -61,6 +61,7 @@ class ReBRACConfig(BaseModel):
     eval_episodes: int = 10
     eval_interval: int = 100000
     # general params
+    seed: int = 42
 
     def __hash__(
         self,
@@ -480,7 +481,10 @@ class ReBRAC(object):
 
 
 def create_rebrac_train_state(
-    rng: jax.random.PRNGKey, observation, action, config
+    rng: jax.random.PRNGKey,
+    observation: jax.ndarray,
+    action: jax.ndarray,
+    config: ReBRACConfig,
 ) -> ReBRACTrainState:
     key, actor_key, critic_key = jax.random.split(rng, 3)
 
@@ -540,9 +544,6 @@ if __name__ == "__main__":
     wandb.init(
         config=config,
         project=config.project,
-        group=config.group,
-        name=config.name,
-        id=str(uuid.uuid4()),
     )
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
@@ -559,7 +560,7 @@ if __name__ == "__main__":
     num_steps = int(config.max_steps / config.n_jitted_updates)
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
     for step in trange(num_steps, desc="ReBRAC Steps"):
-        key, subkey = jax.random.split(key)
+        rng, subkey = jax.random.split(rng)
         train_state, info = algo.update_n_times(train_state, dataset, subkey, config)
         wandb.log({"epoch": step, **{f"ReBRAC/{k}": v for k, v in info.items()}})
 
