@@ -294,7 +294,7 @@ class XQLTrainState(NamedTuple):
 
 
 class XQL(object):
-
+    @classmethod
     def update_critic(
         self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
     ) -> Tuple["XQLTrainState", Dict]:
@@ -316,6 +316,7 @@ class XQL(object):
         )
         return train_state._replace(critic=new_critic), critic_loss
 
+    @classmethod
     def update_value(
         self, train_state: XQLTrainState, batch: Transition, rng, config: XQLConfig
     ) -> Tuple["XQLTrainState", Dict]:
@@ -371,6 +372,7 @@ class XQL(object):
         new_value, value_loss = update_by_loss_grad(train_state.value, value_loss_fn)
         return train_state._replace(value=new_value), value_loss
 
+    @classmethod
     def update_actor(
         self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
     ) -> Tuple["XQLTrainState", Dict]:
@@ -391,7 +393,7 @@ class XQL(object):
         new_actor, actor_loss = update_by_loss_grad(train_state.actor, actor_loss_fn)
         return train_state._replace(actor=new_actor), actor_loss
 
-    @partial(jax.jit, static_argnums=(0, 4))
+    @classmethod
     def update_n_times(
         self,
         train_state: XQLTrainState,
@@ -422,7 +424,7 @@ class XQL(object):
             "critic_loss": critic_loss,
         }
 
-    @partial(jax.jit, static_argnums=(0))
+    @classmethod
     def get_action(
         self,
         train_state: XQLTrainState,
@@ -532,20 +534,20 @@ if __name__ == "__main__":
     )
 
     algo = XQL()
-
+    update_fn = jax.jit(algo.update_n_times, static_argnums=(3,))
+    act_fn = jax.jit(algo.get_action)
     num_steps = config.max_steps // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(
-            train_state, dataset, subkey, config
-        )
+        train_state, update_info = update_fn(train_state, dataset, subkey, config)
+
         if i % config.log_interval == 0:
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
-                algo.get_action,
+                act_fn,
                 temperature=0.0,
                 seed=jax.random.PRNGKey(0),
                 train_state=train_state,
@@ -562,7 +564,7 @@ if __name__ == "__main__":
             wandb.log(eval_metrics, step=i)
     # final evaluation
     policy_fn = partial(
-        algo.get_action,
+        act_fn,
         temperature=0.0,
         seed=jax.random.PRNGKey(0),
         train_state=train_state,

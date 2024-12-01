@@ -189,7 +189,7 @@ class TD3BCTrainState(NamedTuple):
 
 
 class TD3BC(object):
-
+    @classmethod
     def update_actor(
         self,
         train_state: TD3BCTrainState,
@@ -216,6 +216,7 @@ class TD3BC(object):
         new_actor, actor_loss = update_by_loss_grad(train_state.actor, actor_loss_fn)
         return train_state._replace(actor=new_actor), actor_loss
 
+    @classmethod
     def update_critic(
         self,
         train_state: TD3BCTrainState,
@@ -262,7 +263,7 @@ class TD3BC(object):
         )
         return train_state._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(0, 4))
+    @classmethod
     def update_n_times(
         self,
         train_state: TD3BCTrainState,
@@ -301,7 +302,7 @@ class TD3BC(object):
             "actor_loss": actor_loss,
         }
 
-    @partial(jax.jit, static_argnums=(0,))
+    @classmethod
     def get_action(
         self,
         train_state: TD3BCTrainState,
@@ -390,11 +391,13 @@ if __name__ == "__main__":
         subkey, example_batch.observations, example_batch.actions, config
     )
     algo = TD3BC()
+    update_fn = jax.jit(algo.update_n_times, static_argnums=(3,))
+    act_fn = jax.jit(algo.get_action)
 
     num_steps = config.max_steps // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, update_rng = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(
+        train_state, update_info = update_fn(
             train_state,
             dataset,
             update_rng,
@@ -405,7 +408,7 @@ if __name__ == "__main__":
             wandb.log(train_metrics, step=i)
 
         if i % config.eval_interval == 0:
-            policy_fn = partial(algo.get_action, train_state=train_state)
+            policy_fn = partial(act_fn, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn,
                 env,
@@ -417,7 +420,7 @@ if __name__ == "__main__":
             eval_metrics = {f"{config.env_name}/normalized_score": normalized_score}
             wandb.log(eval_metrics, step=i)
     # final evaluation
-    policy_fn = partial(algo.get_action, train_state=train_state)
+    policy_fn = partial(act_fn, train_state=train_state)
     normalized_score = evaluate(
         policy_fn,
         env,

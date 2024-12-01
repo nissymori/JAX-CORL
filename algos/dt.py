@@ -380,7 +380,7 @@ class DTTrainState(NamedTuple):
 
 class DT(object):
 
-    @partial(jax.jit, static_argnums=(0))
+    @classmethod
     def update(
         self, train_state: DTTrainState, batch: Trajectory, rng: jax.random.PRNGKey
     ) -> Tuple[Any, jnp.ndarray]:
@@ -409,7 +409,7 @@ class DT(object):
         transformer = train_state.transformer.apply_gradients(grads=grad)
         return train_state._replace(transformer=transformer), loss
 
-    @partial(jax.jit, static_argnums=(0))
+    @classmethod
     def get_action(
         self,
         train_state: DTTrainState,
@@ -553,6 +553,7 @@ if __name__ == "__main__":
     train_state = create_dt_train_state(subkey, state_dim, act_dim, config)
 
     algo = DT()
+    update_fn = jax.jit(algo.update)
     for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, data_rng, update_rng = jax.random.split(rng, 3)
         traj_batch = sample_traj_batch(
@@ -563,9 +564,7 @@ if __name__ == "__main__":
             episode_num,
             traj_lengths,
         )  # B x T x D
-        train_state, action_loss = algo.update(
-            train_state, traj_batch, update_rng
-        )  # update parameters
+        train_state, action_loss = update_fn(train_state, traj_batch, update_rng)  # update parameters
 
         if i % config.eval_interval == 0:
             # evaluate on env

@@ -204,6 +204,8 @@ class AWACTrainState(NamedTuple):
 
 
 class AWAC(object):
+
+    @classmethod
     def update_actor(
         self,
         train_state: AWACTrainState,
@@ -237,6 +239,7 @@ class AWAC(object):
         new_actor, actor_loss = update_by_loss_grad(train_state.actor, get_actor_loss)
         return train_state._replace(actor=new_actor), actor_loss
 
+    @classmethod
     def update_critic(
         self,
         train_state: AWACTrainState,
@@ -270,7 +273,7 @@ class AWAC(object):
         )
         return train_state._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(0, 4))
+    @classmethod
     def update_n_times(
         self,
         train_state: AWACTrainState,
@@ -301,7 +304,7 @@ class AWAC(object):
             "actor_loss": actor_loss,
         }
 
-    @partial(jax.jit, static_argnums=(0,))
+    @classmethod
     def get_action(
         self,
         train_state: AWACTrainState,
@@ -391,12 +394,14 @@ if __name__ == "__main__":
         config,
     )
     algo = AWAC()
+    update_fn = jax.jit(algo.update_n_times, static_argnums=(3,))
+    act_fn = jax.jit(algo.get_action)
 
     num_steps = config.max_steps // config.n_jitted_updates
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(
+        train_state, update_info = update_fn(
             train_state,
             dataset,
             subkey,
@@ -408,7 +413,7 @@ if __name__ == "__main__":
 
         if i % config.eval_interval == 0:
             policy_fn = partial(
-                algo.get_action,
+                act_fn,
                 temperature=0.0,
                 seed=jax.random.PRNGKey(0),
                 train_state=train_state,
@@ -421,7 +426,7 @@ if __name__ == "__main__":
             wandb.log(eval_metrics, step=i)
     # final evaluation
     policy_fn = partial(
-        algo.get_action,
+        act_fn,
         temperature=0.0,
         seed=jax.random.PRNGKey(0),
         train_state=train_state,
