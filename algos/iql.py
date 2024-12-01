@@ -328,12 +328,12 @@ class IQL(object):
         return actions
 
 
-def create_train_state(
+def create_iql_train_state(
+    rng: jax.random.PRNGKey,
     observations: jnp.ndarray,
     actions: jnp.ndarray,
     config: IQLConfig,
 ) -> IQLTrainState:
-    rng = jax.random.PRNGKey(config.seed)
     rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
@@ -415,8 +415,10 @@ if __name__ == "__main__":
     normalizing_factor = get_normalization(dataset)
     dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     # create train_state
+    rng, subkey = jax.random.split(rng)
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state: IQLTrainState = create_train_state(
+    train_state: IQLTrainState = create_iql_train_state(
+        subkey,
         example_batch.observations,
         example_batch.actions,
         config,

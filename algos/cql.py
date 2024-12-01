@@ -670,8 +670,11 @@ class CQL(object):
         return action.squeeze(0)
 
 
-def create_train_state(
-    observations: jnp.ndarray, actions: jnp.ndarray, config: CQLConfig
+def create_cql_train_state(
+    rng: jax.random.PRNGKey,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
+    config: CQLConfig,
 ) -> CQLTrainState:
     policy_model = TanhGaussianPolicy(
         observation_dim=observations.shape[-1],
@@ -687,7 +690,6 @@ def create_train_state(
         hidden_dims=config.hidden_dims,
         orthogonal_init=config.orthogonal_init,
     )
-    rng = jax.random.PRNGKey(config.seed)
     optimizer_class = {
         "adam": optax.adam,
         "sgd": optax.sgd,
@@ -773,10 +775,14 @@ if __name__ == "__main__":
 
     if config.target_entropy >= 0.0:
         config.target_entropy = -np.prod(env.action_space.shape).item()
-
+    # create train_state
+    rng, subkey = jax.random.split(rng)
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_train_state(
-        example_batch.observations, example_batch.actions, config
+    train_state = create_cql_train_state(
+        subkey,
+        example_batch.observations,
+        example_batch.actions,
+        config,
     )
     algo = CQL()
 

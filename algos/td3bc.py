@@ -77,7 +77,7 @@ class MLP(nn.Module):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 if self.layer_norm:  # Add layer norm after activation
-                    if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    if i + 1 < len(self.hidden_dims):
                         x = nn.LayerNorm()(x)
                 x = self.activations(x)
         return x
@@ -313,10 +313,12 @@ class TD3BC(object):
         return action
 
 
-def create_train_state(
-    observations: jnp.ndarray, actions: jnp.ndarray, config: TD3BCConfig
+def create_td3bc_train_state(
+    rng: jax.random.PRNGKey,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
+    config: TD3BCConfig,
 ) -> TD3BCTrainState:
-    rng = jax.random.PRNGKey(config.seed)
     critic_model = DoubleCritic(
         hidden_dims=config.hidden_dims,
     )
@@ -382,9 +384,10 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(config.seed)
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create train_state
+    rng, subkey = jax.random.split(rng)
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_train_state(
-        example_batch.observations, example_batch.actions, config
+    train_state = create_td3bc_train_state(
+        subkey, example_batch.observations, example_batch.actions, config
     )
     algo = TD3BC()
 

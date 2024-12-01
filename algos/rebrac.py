@@ -61,6 +61,7 @@ class ReBRACConfig(BaseModel):
     eval_episodes: int = 10
     eval_interval: int = 100000
     # general params
+    seed: int = 42
 
     def __hash__(
         self,
@@ -479,9 +480,13 @@ class ReBRAC(object):
         return train_state.actor.apply_fn(train_state.actor.params, obs)
 
 
-def create_train_state(observation, action, config):
-    key = jax.random.PRNGKey(seed=config.seed)
-    key, actor_key, critic_key = jax.random.split(key, 3)
+def create_rebrac_train_state(
+    rng: jax.random.PRNGKey,
+    observation: jax.ndarray,
+    action: jax.ndarray,
+    config: ReBRACConfig,
+) -> ReBRACTrainState:
+    key, actor_key, critic_key = jax.random.split(rng, 3)
 
     action_dim = action.shape[-1]
 
@@ -539,17 +544,15 @@ if __name__ == "__main__":
     wandb.init(
         config=config,
         project=config.project,
-        group=config.group,
-        name=config.name,
-        id=str(uuid.uuid4()),
     )
-    wandb.mark_preempting()
+    rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
-    key = jax.random.PRNGKey(seed=config.seed)
+    # create train_state
+    rng, subkey = jax.random.split(rng)
     example_batch = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_train_state(
-        example_batch.observations, example_batch.actions, config
+    train_state = create_rebrac_train_state(
+        subkey, example_batch.observations, example_batch.actions, config
     )
 
     algo = ReBRAC()
@@ -557,7 +560,7 @@ if __name__ == "__main__":
     num_steps = int(config.max_steps / config.n_jitted_updates)
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
     for step in trange(num_steps, desc="ReBRAC Steps"):
-        key, subkey = jax.random.split(key)
+        rng, subkey = jax.random.split(rng)
         train_state, info = algo.update_n_times(train_state, dataset, subkey, config)
         wandb.log({"epoch": step, **{f"ReBRAC/{k}": v for k, v in info.items()}})
 
