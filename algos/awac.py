@@ -44,7 +44,7 @@ class AWACConfig(BaseModel):
     actor_lr: float = 3e-4
     critic_lr: float = 3e-4
     # AWAC SPECIFIC
-    beta: float = 1.0
+    _lambda: float = 1.0
     tau: float = 0.005
     discount: float = 0.99
 
@@ -226,7 +226,7 @@ class AWAC(object):
             )
             q = jnp.minimum(q_1, q_2)
             adv = q - v
-            weights = jnp.exp(adv / config.beta)
+            weights = jnp.exp(adv / config._lambda)
 
             weights = jax.lax.stop_gradient(weights)
 

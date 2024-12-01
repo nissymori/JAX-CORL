@@ -38,7 +38,7 @@ class IQLConfig(BaseModel):
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
-    # TRAINING
+    # NETWORK
     hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
