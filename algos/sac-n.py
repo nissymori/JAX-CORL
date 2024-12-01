@@ -392,30 +392,10 @@ class SACN(object):
         return action
 
 
-def evaluate(
-    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
-    env: gym.Env,
-    num_episodes: int,
-    obs_mean,
-    obs_std,
-) -> float:  # D4RL specific
-    episode_returns = []
-    for _ in range(num_episodes):
-        episode_return = 0
-        observation, done = env.reset(), False
-        while not done:
-            observation = (observation - obs_mean) / obs_std
-            action = policy_fn(obs=observation)
-            observation, reward, done, info = env.step(action)
-            episode_return += reward
-        episode_returns.append(episode_return)
-    return env.get_normalized_score(np.mean(episode_returns)) * 100
-
-
 def create_sacn_train_state(
     rng: jax.random.PRNGKey,
-    observations: jax.ndarray,
-    actions: jax.ndarray,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
     config: SACNConfig,
 ) -> SACNTrainState:
     key, actor_key, critic_key, alpha_key = jax.random.split(rng, 4)
@@ -447,6 +427,26 @@ def create_sacn_train_state(
     )
     train_state = SACNTrainState(actor=actor, critic=critic, alpha=alpha)
     return train_state
+
+
+def evaluate(
+    policy_fn: Callable[[jnp.ndarray], jnp.ndarray],
+    env: gym.Env,
+    num_episodes: int,
+    obs_mean,
+    obs_std,
+) -> float:  # D4RL specific
+    episode_returns = []
+    for _ in range(num_episodes):
+        episode_return = 0
+        observation, done = env.reset(), False
+        while not done:
+            observation = (observation - obs_mean) / obs_std
+            action = policy_fn(obs=observation)
+            observation, reward, done, info = env.step(action)
+            episode_return += reward
+        episode_returns.append(episode_return)
+    return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
 if __name__ == "__main__":

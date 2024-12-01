@@ -77,7 +77,7 @@ class MLP(nn.Module):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 if self.layer_norm:  # Add layer norm after activation
-                    if self.layer_norm_final or i + 1 < len(self.hidden_dims):
+                    if i + 1 < len(self.hidden_dims):
                         x = nn.LayerNorm()(x)
                 x = self.activations(x)
         return x
