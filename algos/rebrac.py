@@ -479,9 +479,10 @@ class ReBRAC(object):
         return train_state.actor.apply_fn(train_state.actor.params, obs)
 
 
-def create_train_state(observation, action, config):
-    key = jax.random.PRNGKey(seed=config.seed)
-    key, actor_key, critic_key = jax.random.split(key, 3)
+def create_rebrac_train_state(
+    rng: jax.random.PRNGKey, observation, action, config
+) -> ReBRACTrainState:
+    key, actor_key, critic_key = jax.random.split(rng, 3)
 
     action_dim = action.shape[-1]
 
@@ -543,13 +544,14 @@ if __name__ == "__main__":
         name=config.name,
         id=str(uuid.uuid4()),
     )
-    wandb.mark_preempting()
+    rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
-    key = jax.random.PRNGKey(seed=config.seed)
+    # create train_state
+    rng, subkey = jax.random.split(rng)
     example_batch = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state = create_train_state(
-        example_batch.observations, example_batch.actions, config
+    train_state = create_rebrac_train_state(
+        subkey, example_batch.observations, example_batch.actions, config
     )
 
     algo = ReBRAC()

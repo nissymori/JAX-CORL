@@ -429,7 +429,9 @@ class DT(object):
         return action_preds
 
 
-def create_train_state(state_dim: int, act_dim: int, config: DTConfig) -> DTTrainState:
+def create_dt_train_state(
+    rng: jax.random.PRNGKey, state_dim: int, act_dim: int, config: DTConfig
+) -> DTTrainState:
     model = DecisionTransformer(
         state_dim=state_dim,
         act_dim=act_dim,
@@ -439,7 +441,6 @@ def create_train_state(state_dim: int, act_dim: int, config: DTConfig) -> DTTrai
         n_heads=config.n_heads,
         drop_p=config.dropout_p,
     )
-    rng = jax.random.PRNGKey(config.seed)
     rng, init_rng = jax.random.split(rng)
     # initialize params
     params = model.init(
@@ -548,7 +549,8 @@ if __name__ == "__main__":
         make_padded_trajectories(config)
     )
     # create trainer
-    train_state = create_train_state(state_dim, act_dim, config)
+    rng, subkey = jax.random.split(rng)
+    train_state = create_dt_train_state(subkey, state_dim, act_dim, config)
 
     algo = DT()
     for i in tqdm(range(1, config.max_steps + 1), smoothing=0.1, dynamic_ncols=True):

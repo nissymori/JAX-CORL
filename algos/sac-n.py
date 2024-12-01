@@ -412,11 +412,13 @@ def evaluate(
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
-def create_train_state(
-    observations: jax.Array, actions: jax.Array, config: SACNConfig
+def create_sacn_train_state(
+    rng: jax.random.PRNGKey,
+    observations: jax.Array,
+    actions: jax.Array,
+    config: SACNConfig,
 ) -> SACNTrainState:
-    key = jax.random.PRNGKey(seed=config.seed)
-    key, actor_key, critic_key, alpha_key = jax.random.split(key, 4)
+    key, actor_key, critic_key, alpha_key = jax.random.split(rng, 4)
     init_state = jnp.zeros_like(observations)
     init_action = jnp.zeros_like(actions)
 
@@ -455,9 +457,12 @@ if __name__ == "__main__":
     target_entropy = -np.prod(env.action_space.shape)
     config.target_entropy = target_entropy
 
-    example_obs = dataset.observations[0]
-    example_act = dataset.actions[0]
-    train_state = create_train_state(example_obs, example_act, config)
+    # create train_state
+    rng, subkey = jax.random.split(rng)
+    example_batch = jax.tree_util.tree_map(lambda x: x[0], dataset)
+    train_state = create_sacn_train_state(
+        subkey, example_batch.observations, example_batch.actions, config
+    )
 
     algo = SACN()
     num_steps = int(config.max_steps / config.n_jitted_updates)
@@ -468,7 +473,7 @@ if __name__ == "__main__":
             train_state, dataset, update_rng, config
         )
         wandb.log({"step": _, **update_info})
-        
+
         if _ % eval_interval == 0:
             policy_fn = partial(algo.get_action, train_state=train_state)
             normalized_score = evaluate(

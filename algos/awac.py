@@ -317,10 +317,12 @@ class AWAC(object):
         return actions
 
 
-def create_train_state(
-    observations: jnp.ndarray, actions: jnp.ndarray, config: AWACConfig
+def create_awac_train_state(
+    rng: jax.random.PRNGKey,
+    observations: jnp.ndarray,
+    actions: jnp.ndarray,
+    config: AWACConfig,
 ) -> AWACTrainState:
-    rng = jax.random.PRNGKey(config.seed)
     rng, actor_rng, critic_rng, value_rng = jax.random.split(rng, 4)
     # initialize actor
     action_dim = actions.shape[-1]
@@ -380,8 +382,10 @@ if __name__ == "__main__":
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
     # create train_state
+    rng, subkey = jax.random.split(rng)
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
-    train_state: AWACTrainState = create_train_state(
+    train_state: AWACTrainState = create_awac_train_state(
+        subkey,
         example_batch.observations,
         example_batch.actions,
         config,
