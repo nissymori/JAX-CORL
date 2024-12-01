@@ -363,6 +363,7 @@ class ReBRACTrainState(NamedTuple):
 
 
 class ReBRAC(object):
+    @classmethod    
     def update_actor(
         self,
         train_state: ReBRACTrainState,
@@ -407,6 +408,7 @@ class ReBRAC(object):
 
         return train_state._replace(actor=new_actor, critic=new_critic), actor_loss
 
+    @classmethod
     def update_critic(
         self,
         train_state: ReBRACTrainState,
@@ -447,7 +449,7 @@ class ReBRAC(object):
         new_critic = train_state.critic.apply_gradients(grads=grads)
         return train_state._replace(critic=new_critic), critic_loss
 
-    @partial(jax.jit, static_argnums=(0, 4))
+    @classmethod
     def update_n_times(
         self,
         train_state: ReBRACTrainState,
@@ -475,15 +477,15 @@ class ReBRAC(object):
 
         return train_state, {"critic_loss": critic_loss, "actor_loss": actor_loss}
 
-    @partial(jax.jit, static_argnums=(0,))
-    def get_action(self, train_state: ReBRACTrainState, obs: jax.Array) -> jax.Array:
+    @classmethod
+    def get_action(self, train_state: ReBRACTrainState, obs: jnp.ndarray) -> jnp.ndarray:
         return train_state.actor.apply_fn(train_state.actor.params, obs)
 
 
 def create_rebrac_train_state(
     rng: jax.random.PRNGKey,
-    observation: jax.ndarray,
-    action: jax.ndarray,
+    observation: jnp.ndarray,
+    action: jnp.ndarray,
     config: ReBRACConfig,
 ) -> ReBRACTrainState:
     key, actor_key, critic_key = jax.random.split(rng, 3)
@@ -556,24 +558,32 @@ if __name__ == "__main__":
     )
 
     algo = ReBRAC()
+    update_fn = jax.jit(algo.update_n_times, static_argnums=(3,))
+    act_fn = jax.jit(algo.get_action)
 
     num_steps = int(config.max_steps / config.n_jitted_updates)
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
-    for step in trange(num_steps, desc="ReBRAC Steps"):
+    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
-        train_state, info = algo.update_n_times(train_state, dataset, subkey, config)
-        wandb.log({"epoch": step, **{f"ReBRAC/{k}": v for k, v in info.items()}})
+        train_state, info = update_fn(train_state, dataset, subkey, config)
+        wandb.log({"epoch": i, **{f"ReBRAC/{k}": v for k, v in info.items()}})
 
-        if step % eval_interval == 0 or step == num_steps - 1:
-            policy_fn = partial(algo.get_action, train_state=train_state)
+        if i % eval_interval == 0 or i == num_steps - 1:
+            policy_fn = partial(act_fn, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean, obs_std
             )
             wandb.log(
                 {
-                    "epoch": step,
+                    "epoch": i,
                     "eval/normalized_score_mean": normalized_score,
                 }
             )
-            print(f"Step {step} | Eval Normalized Score Mean: {normalized_score}")
+            print(f"Step {i} | Eval Normalized Score Mean: {normalized_score}")
+
+    policy_fn = partial(act_fn, train_state=train_state)
+    normalized_score = evaluate(
+        policy_fn, env, config.eval_episodes, obs_mean, obs_std
+    )
+    wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
     wandb.finish()

@@ -365,7 +365,7 @@ class CQLTrainState(NamedTuple):
 
 class CQL(object):
 
-    @partial(jax.jit, static_argnames=("self", "config", "bc"))
+    @classmethod
     def train(self, train_state: CQLTrainState, dataset, rng, config, bc=False):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, update_rng = jax.random.split(rng, 3)
@@ -378,6 +378,7 @@ class CQL(object):
             )
         return train_state, metrics
 
+    @classmethod
     def _train_step(self, train_state: CQLTrainState, _rng, batch, config, bc=False):
         policy_fn = train_state.policy.apply_fn
         qf_fn = train_state.qf1.apply_fn
@@ -659,7 +660,7 @@ class CQL(object):
 
         return train_state, metrics
 
-    @partial(jax.jit, static_argnames=("self",))
+    @classmethod
     def get_action(self, train_state, obs):
         action, _ = train_state.policy.apply_fn(
             train_state.policy.params,
@@ -785,16 +786,18 @@ if __name__ == "__main__":
         config,
     )
     algo = CQL()
+    update_fn = jax.jit(algo.update_n_times, static_argnums=(3,))
+    act_fn = jax.jit(algo.get_action)
 
     num_steps = int(config.max_steps // config.n_jitted_updates)
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         metrics = {"step": i}
         rng, update_rng = jax.random.split(rng)
-        train_state, metrics = algo.train(train_state, dataset, update_rng, config)
+        train_state, metrics = update_fn(train_state, dataset, update_rng, config)
         metrics.update(metrics)
 
         if i == 0 or (i + 1) % config.eval_interval == 0:
-            policy_fn = partial(algo.get_action, train_state=train_state)
+            policy_fn = partial(act_fn, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
             )
@@ -803,7 +806,7 @@ if __name__ == "__main__":
         wandb.log(metrics)
 
     # final evaluation
-    policy_fn = partial(algo.get_action, train_state=train_state)
+    policy_fn = partial(act_fn, train_state=train_state)
     normalized_score = evaluate(
         policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1
     )

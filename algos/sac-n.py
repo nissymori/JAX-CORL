@@ -263,6 +263,7 @@ class SACNTrainState(NamedTuple):
 
 class SACN(object):
     # SAC-N losses
+    @classmethod
     def update_actor(
         self,
         train_state: SACNTrainState,
@@ -293,6 +294,7 @@ class SACN(object):
         info = {"batch_entropy": batch_entropy, "actor_loss": loss}
         return train_state._replace(actor=new_actor), info
 
+    @classmethod
     def update_alpha(
         self, train_state: SACNTrainState, entropy: float, config: SACNConfig
     ) -> Tuple[SACNTrainState, Dict[str, Any]]:
@@ -309,6 +311,7 @@ class SACN(object):
         }
         return train_state._replace(alpha=new_alpha), info
 
+    @classmethod
     def update_critic(
         self,
         train_state: SACNTrainState,
@@ -346,7 +349,7 @@ class SACN(object):
         info = {"critic_loss": loss}
         return train_state._replace(critic=new_critic), info
 
-    @partial(jax.jit, static_argnums=(0, 4))
+    @classmethod
     def update_n_times(
         self,
         train_state: SACNTrainState,
@@ -381,7 +384,7 @@ class SACN(object):
             "batch_entropy": actor_info["batch_entropy"],
         }
 
-    @partial(jax.jit, static_argnums=(0))
+    @classmethod
     def get_action(
         self,
         train_state: SACNTrainState,
@@ -465,17 +468,17 @@ if __name__ == "__main__":
     )
 
     algo = SACN()
+    update_fn = jax.jit(algo.update_n_times, static_argnums=(3,))
+    act_fn = jax.jit(algo.get_action)
     num_steps = int(config.max_steps / config.n_jitted_updates)
     eval_interval = int(config.eval_interval / config.n_jitted_updates)
-    for _ in trange(num_steps):
+    for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, update_rng = jax.random.split(rng)
-        train_state, update_info = algo.update_n_times(
-            train_state, dataset, update_rng, config
-        )
-        wandb.log({"step": _, **update_info})
+        train_state, update_info = update_fn(train_state, dataset, update_rng, config)
+        wandb.log({"step": i, **update_info})
 
-        if _ % eval_interval == 0:
-            policy_fn = partial(algo.get_action, train_state=train_state)
+        if i % eval_interval == 0:
+            policy_fn = partial(act_fn, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn,
                 env,
@@ -486,12 +489,17 @@ if __name__ == "__main__":
 
             wandb.log(
                 {
-                    "step": _,
+                    "step": i,
                     "eval/normalized_score_mean": np.mean(normalized_score),
                     "eval/normalized_score_std": np.std(normalized_score),
                 }
             )
             print(
-                f"Epoch {_}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}"
+                f"Epoch {i}, eval/normalized_score_mean: {np.mean(normalized_score)}, eval/normalized_score_std: {np.std(normalized_score)}"
             )
+    policy_fn = partial(act_fn, train_state=train_state)
+    normalized_score = evaluate(
+        policy_fn, env, config.eval_episodes, obs_mean, obs_std
+    )
+    wandb.log({f"{config.env_name}/final_normalized_score": normalized_score})
     wandb.finish()
