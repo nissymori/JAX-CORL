@@ -22,11 +22,12 @@ import numpy as np
 import optax
 import pyrallis
 import wandb
+import tqdm
 from flax.core import FrozenDict
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-from tqdm.auto import trange
+
 
 
 class ReBRACConfig(BaseModel):
@@ -51,7 +52,7 @@ class ReBRACConfig(BaseModel):
     policy_freq: int = 2
     normalize_q: bool = True
     # training params
-    batch_size: int = 256
+    batch_size: int = 1024
     max_steps: int = 1000000
     data_size: int = 1000000
     normalize_reward: bool = False

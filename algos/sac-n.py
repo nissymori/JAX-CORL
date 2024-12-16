@@ -19,10 +19,10 @@ import numpy as np
 import optax
 import pyrallis
 import wandb
+import tqdm
 from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pydantic import BaseModel
-from tqdm.auto import trange
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True"
 
