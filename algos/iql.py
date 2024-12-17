@@ -38,11 +38,13 @@ class IQLConfig(BaseModel):
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
+    normalize_rewards: bool = True
     # NETWORK
     hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
+    layer_norm: bool = True
     # IQL SPECIFIC
     expectile: float = (
         0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: expectile=0.9)
@@ -63,8 +65,8 @@ conf_dict = OmegaConf.from_cli()
 config = IQLConfig(**conf_dict)
 
 
-def default_init(scale: Optional[float] = 1.0):
-    return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
+def default_init(scale: Optional[float] = jnp.sqrt(2)):
+    return nn.initializers.orthogonal(scale)
 
 
 class MLP(nn.Module):
@@ -72,12 +74,15 @@ class MLP(nn.Module):
     activations: Callable[[jnp.ndarray], jnp.ndarray] = nn.relu
     activate_final: bool = False
     kernel_init: Callable[[Any, Sequence[int], Any], jnp.ndarray] = default_init()
+    layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         for i, hidden_dims in enumerate(self.hidden_dims):
             x = nn.Dense(hidden_dims, kernel_init=self.kernel_init)(x)
             if i + 1 < len(self.hidden_dims) or self.activate_final:
+                if self.layer_norm:  # Add layer norm after activation
+                    x = nn.LayerNorm()(x)
                 x = self.activations(x)
         return x
 
@@ -108,19 +113,19 @@ def ensemblize(cls, num_qs, out_axes=0, **kwargs):
 
 class ValueCritic(nn.Module):
     hidden_dims: Sequence[int]
+    layer_norm: bool = False
 
     @nn.compact
     def __call__(self, observations: jnp.ndarray) -> jnp.ndarray:
-        critic = MLP((*self.hidden_dims, 1))(observations)
+        critic = MLP((*self.hidden_dims, 1), layer_norm=self.layer_norm)(observations)
         return jnp.squeeze(critic, -1)
 
 
 class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
-    log_std_min: Optional[float] = -10
+    log_std_min: Optional[float] = -5.0
     log_std_max: Optional[float] = 2
-    final_fc_init_scale: float = 1e-3
 
     @nn.compact
     def __call__(
@@ -132,7 +137,7 @@ class GaussianPolicy(nn.Module):
         )(observations)
 
         means = nn.Dense(
-            self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
+            self.action_dim, kernel_init=default_init()
         )(outputs)
         log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
@@ -151,6 +156,19 @@ class Transition(NamedTuple):
     dones: jnp.ndarray
 
 
+def get_normalization(dataset: Transition) -> float:
+    # into numpy.ndarray
+    dataset = jax.tree_util.tree_map(lambda x: np.array(x), dataset)
+    returns = []
+    ret = 0
+    for r, term in zip(dataset.rewards, dataset.dones):
+        ret += r
+        if term:
+            returns.append(ret)
+            ret = 0
+    return (max(returns) - min(returns)) / 1000
+
+
 def get_dataset(
     env: gym.Env, config: IQLConfig, clip_to_eps: bool = True, eps: float = 1e-5
 ) -> Transition:
@@ -160,29 +178,24 @@ def get_dataset(
         lim = 1 - eps
         dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
 
-    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
-    same_obs = np.all(
-        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
-        axis=-1,
-    )
-    dones = 1.0 - same_obs.astype(np.float32)
-    dones[-1] = 1
+    dones_float = np.zeros_like(dataset['rewards'])
+
+    for i in range(len(dones_float) - 1):
+        if np.linalg.norm(dataset['observations'][i + 1] -
+                            dataset['next_observations'][i]
+                            ) > 1e-6 or dataset['terminals'][i] == 1.0:
+            dones_float[i] = 1
+        else:
+            dones_float[i] = 0
+    dones_float[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
-        dones=jnp.array(dones, dtype=jnp.float32),
+        dones=jnp.array(dones_float, dtype=jnp.float32),
     )
-    # shuffle data and select the first data_size samples
-    data_size = min(config.data_size, len(dataset.observations))
-    rng = jax.random.PRNGKey(config.seed)
-    rng, rng_permute, rng_select = jax.random.split(rng, 3)
-    perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
-    assert len(dataset.observations) >= data_size
-    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -192,6 +205,19 @@ def get_dataset(
             observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
             next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
         )
+    # normalize rewards
+    if config.normalize_rewards:    
+        normalizing_factor = get_normalization(dataset)
+        dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
+    
+    # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
+    rng = jax.random.PRNGKey(config.seed)
+    rng, rng_permute, rng_select = jax.random.split(rng, 3)
+    perm = jax.random.permutation(rng_permute, len(dataset.observations))
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     return dataset, obs_mean, obs_std
 
 
@@ -365,7 +391,7 @@ def create_iql_train_state(
         tx=optax.adam(learning_rate=config.critic_lr),
     )
     # initialize value
-    value_model = ValueCritic(config.hidden_dims)
+    value_model = ValueCritic(config.hidden_dims, layer_norm=config.layer_norm)
     value = TrainState.create(
         apply_fn=value_model.apply,
         params=value_model.init(value_rng, observations),
@@ -396,27 +422,11 @@ def evaluate(
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
-def get_normalization(dataset: Transition) -> float:
-    # into numpy.ndarray
-    dataset = jax.tree_util.tree_map(lambda x: np.array(x), dataset)
-    returns = []
-    ret = 0
-    for r, term in zip(dataset.rewards, dataset.dones):
-        ret += r
-        if term:
-            returns.append(ret)
-            ret = 0
-    return (max(returns) - min(returns)) / 1000
-
-
 if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
-
-    normalizing_factor = get_normalization(dataset)
-    dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     # create train_state
     rng, subkey = jax.random.split(rng)
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
