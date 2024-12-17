@@ -189,20 +189,23 @@ def get_dataset(
         lim = 1 - eps
         dataset["actions"] = np.clip(dataset["actions"], -lim, lim)
 
-    imputed_next_observations = np.roll(dataset["observations"], -1, axis=0)
-    same_obs = np.all(
-        np.isclose(imputed_next_observations, dataset["next_observations"], atol=1e-5),
-        axis=-1,
-    )
-    dones = 1.0 - same_obs.astype(np.float32)
-    dones[-1] = 1
+    dones_float = np.zeros_like(dataset['rewards'])
+
+    for i in range(len(dones_float) - 1):
+        if np.linalg.norm(dataset['observations'][i + 1] -
+                            dataset['next_observations'][i]
+                            ) > 1e-6 or dataset['terminals'][i] == 1.0:
+            dones_float[i] = 1
+        else:
+            dones_float[i] = 0
+    dones_float[-1] = 1
 
     dataset = Transition(
         observations=jnp.array(dataset["observations"], dtype=jnp.float32),
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
-        dones=jnp.array(dones, dtype=jnp.float32),
+        dones=jnp.array(dones_float, dtype=jnp.float32),
     )
     # normalize states
     obs_mean, obs_std = 0, 1
@@ -340,7 +343,7 @@ class XQL(object):
                 return loss.mean()
 
             q1, q2 = train_state.critic.apply_fn(
-                train_state.critic.params, batch.observations, batch.actions
+                critic_params, batch.observations, batch.actions
             )
             loss_1 = mse_loss(q1, target_q, v, config.loss_temp)
             loss_2 = mse_loss(q2, target_q, v, config.loss_temp)
@@ -414,8 +417,8 @@ class XQL(object):
     ) -> Tuple["XQLTrainState", Dict]:
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             v = train_state.value.apply_fn(train_state.value.params, batch.observations)
-            q1, q2 = train_state.critic.apply_fn(
-                train_state.critic.params, batch.observations, batch.actions
+            q1, q2 = train_state.target_critic.apply_fn(
+                train_state.target_critic.params, batch.observations, batch.actions
             )
             q = jnp.minimum(q1, q2)
             exp_a = jnp.exp((q - v) * config.beta)
