@@ -38,6 +38,7 @@ class XQLConfig(BaseModel):
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
+    normalize_rewards: bool = True
     # NETWORK
     hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
@@ -45,7 +46,7 @@ class XQLConfig(BaseModel):
     critic_lr: float = 3e-4
     tau: float = 0.005
     discount: float = 0.99
-    # IQL SPECIFIC
+    # XQL SPECIFIC
     expectile: float = (
         0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
     )
@@ -75,8 +76,8 @@ conf_dict = OmegaConf.from_cli()
 config = XQLConfig(**conf_dict)
 
 
-def default_init(scale: Optional[float] = 1.0):
-    return nn.initializers.variance_scaling(scale, "fan_avg", "uniform")
+def default_init(scale: Optional[float] = jnp.sqrt(2)):
+    return nn.initializers.orthogonal(scale)
 
 
 class MLP(nn.Module):
@@ -134,9 +135,8 @@ class ValueCritic(nn.Module):
 class GaussianPolicy(nn.Module):
     hidden_dims: Sequence[int]
     action_dim: int
-    log_std_min: Optional[float] = -10
+    log_std_min: Optional[float] = -5.0
     log_std_max: Optional[float] = 2
-    final_fc_init_scale: float = 1e-3
 
     @nn.compact
     def __call__(
@@ -148,7 +148,7 @@ class GaussianPolicy(nn.Module):
         )(observations)
 
         means = nn.Dense(
-            self.action_dim, kernel_init=default_init(self.final_fc_init_scale)
+            self.action_dim, kernel_init=default_init()
         )(outputs)
         log_stds = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
         log_stds = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
@@ -165,6 +165,19 @@ class Transition(NamedTuple):
     rewards: jnp.ndarray
     next_observations: jnp.ndarray
     dones: jnp.ndarray
+
+
+def get_normalization(dataset: Transition) -> float:
+    # into numpy.ndarray
+    dataset = jax.tree_util.tree_map(lambda x: np.array(x), dataset)
+    returns = []
+    ret = 0
+    for r, term in zip(dataset.rewards, dataset.dones):
+        ret += r
+        if term:
+            returns.append(ret)
+            ret = 0
+    return (max(returns) - min(returns)) / 1000
 
 
 def get_dataset(
@@ -191,14 +204,6 @@ def get_dataset(
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
         dones=jnp.array(dones, dtype=jnp.float32),
     )
-    # shuffle data and select the first data_size samples
-    data_size = min(config.data_size, len(dataset.observations))
-    rng = jax.random.PRNGKey(config.seed)
-    rng, rng_permute, rng_select = jax.random.split(rng, 3)
-    perm = jax.random.permutation(rng_permute, len(dataset.observations))
-    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
-    assert len(dataset.observations) >= data_size
-    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -208,6 +213,19 @@ def get_dataset(
             observations=(dataset.observations - obs_mean) / (obs_std + 1e-5),
             next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
         )
+    # normalize rewards
+    if config.normalize_rewards:    
+        normalizing_factor = get_normalization(dataset)
+        dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
+    
+    # shuffle data and select the first data_size samples
+    data_size = min(config.data_size, len(dataset.observations))
+    rng = jax.random.PRNGKey(config.seed)
+    rng, rng_permute, rng_select = jax.random.split(rng, 3)
+    perm = jax.random.permutation(rng_permute, len(dataset.observations))
+    dataset = jax.tree_util.tree_map(lambda x: x[perm], dataset)
+    assert len(dataset.observations) >= data_size
+    dataset = jax.tree_util.tree_map(lambda x: x[:data_size], dataset)
     return dataset, obs_mean, obs_std
 
 
@@ -267,6 +285,16 @@ def expectile_loss(diff, expectile=0.8) -> jnp.ndarray:
     return weight * (diff**2)
 
 
+def huber_loss(x, delta: float = 1.):
+    # 0.5 * x^2                  if |x| <= d
+    # 0.5 * d^2 + d * (|x| - d)  if |x| > d
+    abs_x = jnp.abs(x)
+    quadratic = jnp.minimum(abs_x, delta)
+    # Same as max(abs_x - delta, 0) but avoids potentially doubling gradient.
+    linear = abs_x - quadratic
+    return 0.5 * quadratic**2 + delta * linear
+
+
 def target_update(
     model: TrainState, target_model: TrainState, tau: float
 ) -> TrainState:
@@ -298,18 +326,26 @@ class XQL(object):
     def update_critic(
         self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
     ) -> Tuple["XQLTrainState", Dict]:
+        next_v = train_state.value.apply_fn(
+            train_state.value.params, batch.next_observations
+        )
+        target_q = batch.rewards + config.discount * (1 - batch.dones) * next_v
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
-            next_v = train_state.value.apply_fn(
-                train_state.value.params, batch.next_observations
-            )
-            target_q = batch.rewards + config.discount * (1 - batch.dones) * next_v
+            v = train_state.value.apply_fn(train_state.value.params, batch.observations)
+            def mse_loss(q, q_target, *args):
+                x = q-q_target
+                loss = huber_loss(x, delta=20.0)  # x**2
+                return loss.mean()
+
             q1, q2 = train_state.critic.apply_fn(
-                critic_params, batch.observations, batch.actions
+                train_state.critic.params, batch.observations, batch.actions
             )
-            critic_loss = ((q1 - target_q) ** 2 + (q2 - target_q) ** 2).mean()
-            return critic_loss
+            loss_1 = mse_loss(q1, target_q, v, config.loss_temp)
+            loss_2 = mse_loss(q2, target_q, v, config.loss_temp)
+            loss = (loss_1 + loss_2) / 2
+            return loss
 
         new_critic, critic_loss = update_by_loss_grad(
             train_state.critic, critic_loss_fn
@@ -505,27 +541,12 @@ def evaluate(
     return env.get_normalized_score(np.mean(episode_returns)) * 100
 
 
-def get_normalization(dataset: Transition) -> float:
-    # into numpy.ndarray
-    dataset = jax.tree_util.tree_map(lambda x: np.array(x), dataset)
-    returns = []
-    ret = 0
-    for r, term in zip(dataset.rewards, dataset.dones):
-        ret += r
-        if term:
-            returns.append(ret)
-            ret = 0
-    return (max(returns) - min(returns)) / 1000
-
-
 if __name__ == "__main__":
     wandb.init(config=config, project=config.project)
     rng = jax.random.PRNGKey(config.seed)
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
 
-    normalizing_factor = get_normalization(dataset)
-    dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     # create train_state
     rng, subkey = jax.random.split(rng)
     example_batch: Transition = jax.tree_util.tree_map(lambda x: x[0], dataset)
