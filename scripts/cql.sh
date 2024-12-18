@@ -1,7 +1,7 @@
-project=cql-report-separate
+project=cql-report
 
 cd .. && cd algos
-for seed in 1 2 3 4 5 6 7 8 9 10
+for seed in 1 2 3 4 5
 do
     python cql.py env_name=halfcheetah-medium-v2 seed=$seed project=$project
     python cql.py env_name=halfcheetah-medium-expert-v2 seed=$seed project=$project

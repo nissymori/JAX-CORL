@@ -366,7 +366,7 @@ class CQLTrainState(NamedTuple):
 class CQL(object):
 
     @classmethod
-    def train(self, train_state: CQLTrainState, dataset, rng, config, bc=False):
+    def update_n_times(self, train_state: CQLTrainState, dataset, rng, config, bc=False):
         for _ in range(config.n_jitted_updates):
             rng, batch_rng, update_rng = jax.random.split(rng, 3)
             batch_indices = jax.random.randint(
