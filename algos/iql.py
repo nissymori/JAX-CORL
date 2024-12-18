@@ -38,13 +38,14 @@ class IQLConfig(BaseModel):
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
-    normalize_rewards: bool = True
+    normalize_reward: bool = True
     # NETWORK
     hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
     value_lr: float = 3e-4
     critic_lr: float = 3e-4
     layer_norm: bool = True
+    opt_decay_schedule: bool = True
     # IQL SPECIFIC
     expectile: float = (
         0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: expectile=0.9)
@@ -196,6 +197,10 @@ def get_dataset(
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
         dones=jnp.array(dones_float, dtype=jnp.float32),
     )
+    if "antmaze" in config.env_name:
+        dataset = dataset._replace(
+            rewards=dataset.rewards - 1.0
+        )
     # normalize states
     obs_mean, obs_std = 0, 1
     if config.normalize_state:
@@ -206,7 +211,7 @@ def get_dataset(
             next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
         )
     # normalize rewards
-    if config.normalize_rewards:    
+    if config.normalize_reward:    
         normalizing_factor = get_normalization(dataset)
         dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     
@@ -371,8 +376,11 @@ def create_iql_train_state(
         action_dim=action_dim,
         log_std_min=-5.0,
     )
-    schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
-    actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
+    if config.opt_decay_schedule:
+        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
+        actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
+    else:
+        actor_tx = optax.adam(learning_rate=config.actor_lr)
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_model.init(actor_rng, observations),

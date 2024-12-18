@@ -38,7 +38,7 @@ class XQLConfig(BaseModel):
     # DATASET
     data_size: int = int(1e6)
     normalize_state: bool = False
-    normalize_rewards: bool = True
+    normalize_reward: bool = True
     # NETWORK
     hidden_dims: Tuple[int, int] = (256, 256)
     actor_lr: float = 3e-4
@@ -217,7 +217,7 @@ def get_dataset(
             next_observations=(dataset.next_observations - obs_mean) / (obs_std + 1e-5),
         )
     # normalize rewards
-    if config.normalize_rewards:    
+    if config.normalize_reward:    
         normalizing_factor = get_normalization(dataset)
         dataset = dataset._replace(rewards=dataset.rewards / normalizing_factor)
     
