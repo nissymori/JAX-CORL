@@ -15,7 +15,7 @@ JAX-CORL is complementing the single-file RL ecosystem by offering the combinati
 |Algorithm|implementation|training time (CORL)|training time (ours)| wandb |
 |---|---|---|---|---|
 |[AWAC](https://arxiv.org/abs/2006.09359)| [algos/awac.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/awac.py) |4.46h|11m(**24x faster**)|[link](https://api.wandb.ai/links/nissymori/mwi235j6) |
-|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |4.08h|9m(**28x faster**)| [link]([https://api.wandb.ai/links/nissymori/hazajm9q](https://api.wandb.ai/links/nissymori/2mtlvha5)) |
+|[IQL](https://arxiv.org/abs/2110.06169)|  [algos/iql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/iql.py)   |4.08h|9m(**28x faster**)| [link](https://wandb.ai/nissymori/xql-report/reports/XQL-mujoco--VmlldzoxMDY0MDUyNQ?accessToken=nlwulejjkfvxoddnlp0xyl0pcy8zd61aw9cw2od0pp1wlgxe34glftw3gex2v1f4) |
 |[TD3+BC](https://arxiv.org/pdf/2106.06860)| [algos/td3_bc.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/td3bc.py)  |2.47h|9m(**16x faster**)| [link](https://api.wandb.ai/links/nissymori/h21py327) |
 |[CQL](https://arxiv.org/abs/2006.04779)| [algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)   |11.52h|56m(**12x faster**)|[link](https://api.wandb.ai/links/nissymori/cnxdwkgf)|
 |[XQL](https://arxiv.org/abs/2301.02328)| [algos/xql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/xql.py)   | - | 12m | [link]([algos/cql.py](https://github.com/nissymori/JAX-CORL/blob/main/algos/cql.py)) |
@@ -31,7 +31,7 @@ We plan to extend the verification to other D4RL benchmarks such as AntMaze. For
 |env|AWAC|IQL|TD3+BC|CQL|XQL|DT|
 |---|---|---|---|---|---|---|
 |halfcheetah-medium-v2| $41.56\pm0.79$ |$46.23\pm0.23$   |$48.12\pm0.42$   |$48.65\pm 0.49$|$47.16\pm0.16$|$42.63 \pm 0.53$|
-|halfcheetah-medium-expert-v2| $76.61\pm 9.60$ | $92.95\pm0.79$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$|$86.33\pm$|$70.63\pm 14.70$|
+|halfcheetah-medium-expert-v2| $76.61\pm 9.60$ | $92.95\pm0.79$ | $92.99\pm 0.11$  |$53.76 \pm 14.53$|$86.33\pm4.89$|$70.63\pm 14.70$|
 |hopper-medium-v2| $51.45\pm 5.40$  | $56.78\pm3.50$  | $46.51\pm4.57$  |$77.56\pm 7.12$|$62.35\pm5.42$|$60.85\pm6.78$|
 |hopper-medium-expert-v2| $51.89\pm2.11$  | $90.72\pm 14.80$  |$105.47\pm5.03$   |$90.37 \pm 31.29$|$104.12\pm5.39$|$109.07\pm 4.56$|
 |walker2d-medium-v2| $68.12\pm12.08$ | $77.16\pm5.74$  |  $72.73\pm4.66$ |$80.16\pm 4.19$|$83.45\pm0.42$|$71.04 \pm5.64$|
