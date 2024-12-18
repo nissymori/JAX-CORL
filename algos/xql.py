@@ -46,6 +46,7 @@ class XQLConfig(BaseModel):
     critic_lr: float = 3e-4
     tau: float = 0.005
     discount: float = 0.99
+    opt_decay_schedule: bool = True
     # XQL SPECIFIC
     expectile: float = (
         0.7  # FYI: for Hopper-me, 0.5 produce better result. (antmaze: tau=0.9)
@@ -165,6 +166,7 @@ class Transition(NamedTuple):
     rewards: jnp.ndarray
     next_observations: jnp.ndarray
     dones: jnp.ndarray
+    dones_float: jnp.ndarray
 
 
 def get_normalization(dataset: Transition) -> float:
@@ -172,7 +174,7 @@ def get_normalization(dataset: Transition) -> float:
     dataset = jax.tree_util.tree_map(lambda x: np.array(x), dataset)
     returns = []
     ret = 0
-    for r, term in zip(dataset.rewards, dataset.dones):
+    for r, term in zip(dataset.rewards, dataset.dones_float):
         ret += r
         if term:
             returns.append(ret)
@@ -205,7 +207,8 @@ def get_dataset(
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
-        dones=jnp.array(dones_float, dtype=jnp.float32),
+        dones=jnp.array(dataset["terminals"], dtype=jnp.float32),
+        dones_float=jnp.array(dones_float, dtype=jnp.float32),
     )
     # normalize states
     obs_mean, obs_std = 0, 1
@@ -415,15 +418,15 @@ class XQL(object):
     def update_actor(
         self, train_state: XQLTrainState, batch: Transition, config: XQLConfig
     ) -> Tuple["XQLTrainState", Dict]:
-        def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            v = train_state.value.apply_fn(train_state.value.params, batch.observations)
-            q1, q2 = train_state.target_critic.apply_fn(
-                train_state.target_critic.params, batch.observations, batch.actions
-            )
-            q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * config.beta)
-            exp_a = jnp.minimum(exp_a, 100.0)
+        v = train_state.value.apply_fn(train_state.value.params, batch.observations)
+        q1, q2 = train_state.target_critic.apply_fn(
+            train_state.target_critic.params, batch.observations, batch.actions
+        )
+        q = jnp.minimum(q1, q2)
+        exp_a = jnp.exp((q - v) * config.beta)
+        exp_a = jnp.minimum(exp_a, 100.0)
 
+        def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
             dist = train_state.actor.apply_fn(actor_params, batch.observations)
             log_probs = dist.log_prob(batch.actions)
             actor_loss = -(exp_a * log_probs).mean()
@@ -493,8 +496,13 @@ def create_xql_train_state(
         action_dim=action_dim,
         log_std_min=-5.0,
     )
-    schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
-    actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
+
+    if config.opt_decay_schedule:   
+        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_steps)
+        actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
+    else:
+        actor_tx = optax.adam(learning_rate=config.actor_lr)
+
     actor = TrainState.create(
         apply_fn=actor_model.apply,
         params=actor_model.init(actor_rng, observations),
