@@ -154,6 +154,7 @@ class Transition(NamedTuple):
     actions: jnp.ndarray
     rewards: jnp.ndarray
     next_observations: jnp.ndarray
+    masks: jnp.ndarray
     dones: jnp.ndarray
 
 
@@ -195,6 +196,7 @@ def get_dataset(
         actions=jnp.array(dataset["actions"], dtype=jnp.float32),
         rewards=jnp.array(dataset["rewards"], dtype=jnp.float32),
         next_observations=jnp.array(dataset["next_observations"], dtype=jnp.float32),
+        masks=jnp.array(1 - dataset["terminals"], dtype=jnp.float32),
         dones=jnp.array(dones_float, dtype=jnp.float32),
     )
     if "antmaze" in config.env_name:
@@ -263,13 +265,14 @@ class IQL(object):
     def update_critic(
         self, train_state: IQLTrainState, batch: Transition, config: IQLConfig
     ) -> Tuple["IQLTrainState", Dict]:
+        next_v = train_state.value.apply_fn(
+            train_state.value.params, batch.next_observations
+        )
+        target_q = batch.rewards + config.discount * batch.masks * next_v
+        
         def critic_loss_fn(
             critic_params: flax.core.FrozenDict[str, Any]
         ) -> jnp.ndarray:
-            next_v = train_state.value.apply_fn(
-                train_state.value.params, batch.next_observations
-            )
-            target_q = batch.rewards + config.discount * (1 - batch.dones) * next_v
             q1, q2 = train_state.critic.apply_fn(
                 critic_params, batch.observations, batch.actions
             )
@@ -285,11 +288,11 @@ class IQL(object):
     def update_value(
         self, train_state: IQLTrainState, batch: Transition, config: IQLConfig
     ) -> Tuple["IQLTrainState", Dict]:
+        q1, q2 = train_state.target_critic.apply_fn(
+            train_state.target_critic.params, batch.observations, batch.actions
+        )
+        q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
         def value_loss_fn(value_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            q1, q2 = train_state.target_critic.apply_fn(
-                train_state.target_critic.params, batch.observations, batch.actions
-            )
-            q = jax.lax.stop_gradient(jnp.minimum(q1, q2))
             v = train_state.value.apply_fn(value_params, batch.observations)
             value_loss = expectile_loss(q - v, config.expectile).mean()
             return value_loss
@@ -301,15 +304,14 @@ class IQL(object):
     def update_actor(
         self, train_state: IQLTrainState, batch: Transition, config: IQLConfig
     ) -> Tuple["IQLTrainState", Dict]:
+        v = train_state.value.apply_fn(train_state.value.params, batch.observations)
+        q1, q2 = train_state.critic.apply_fn(
+            train_state.target_critic.params, batch.observations, batch.actions
+        )
+        q = jnp.minimum(q1, q2)
+        exp_a = jnp.exp((q - v) * config.beta)
+        exp_a = jnp.minimum(exp_a, 100.0)
         def actor_loss_fn(actor_params: flax.core.FrozenDict[str, Any]) -> jnp.ndarray:
-            v = train_state.value.apply_fn(train_state.value.params, batch.observations)
-            q1, q2 = train_state.critic.apply_fn(
-                train_state.critic.params, batch.observations, batch.actions
-            )
-            q = jnp.minimum(q1, q2)
-            exp_a = jnp.exp((q - v) * config.beta)
-            exp_a = jnp.minimum(exp_a, 100.0)
-
             dist = train_state.actor.apply_fn(actor_params, batch.observations)
             log_probs = dist.log_prob(batch.actions)
             actor_loss = -(exp_a * log_probs).mean()
