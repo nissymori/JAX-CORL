@@ -29,18 +29,25 @@ class CQLConfig(BaseModel):
     also: str = "CQL"
     project: str = "cql-jax"
     env_name: str = "halfcheetah-medium-expert-v2"
-    max_traj_length: int = 1000
     seed: int = 42
-    batch_size: int = 256
     n_jitted_updates: int = 8
     max_steps: int = 1000000
     eval_interval: int = 10000
     eval_episodes: int = 5
-    normalize_state: bool = False
+    # DATA
     data_size: int = 1000000
-    action_dim: int = None
+    action_dim: Optional[int] = None
+    normalize_state: bool = False
+    reward_scale: float = 1.0
+    reward_bias: float = 0.0
+    batch_size: int = 256
+    max_traj_length: int = 1000
     # NETWORK
     hidden_dims: Tuple[int] = (256, 256)
+    policy_lr: float = 3e-4
+    qf_lr: float = 3e-4
+    optimizer_type: str = "adam"
+    soft_target_update_rate: float = 5e-3
     orthogonal_init: bool = False
     policy_log_std_multiplier: float = 1.0
     policy_log_std_offset: float = -1.0
@@ -50,10 +57,6 @@ class CQLConfig(BaseModel):
     use_automatic_entropy_tuning: bool = True
     backup_entropy: bool = False
     target_entropy: float = 0.0
-    policy_lr: float = 3e-4
-    qf_lr: float = 3e-4
-    optimizer_type: str = "adam"
-    soft_target_update_rate: float = 5e-3
     use_cql: bool = True
     cql_n_actions: int = 10
     cql_importance_sample: bool = True
@@ -320,35 +323,41 @@ def collect_metrics(metrics, names, prefix=None):
 
 
 class CQLTrainState(NamedTuple):
-    policy: TrainState
-    qf1: TrainState
-    qf2: TrainState
-    log_alpha: TrainState
-    target_qf1_params: Any
-    target_qf2_params: Any
-    global_steps: int
+    policy: TrainState 
+    qf1: TrainState 
+    qf2: TrainState 
+    log_alpha: TrainState 
+    alpha_prime: TrainState 
+    target_qf1_params: Any 
+    target_qf2_params: Any 
+    global_steps: int = 0
 
     def train_params(self):
-        return {
+        params_dict = {
             "policy": self.policy.params,
             "qf1": self.qf1.params,
             "qf2": self.qf2.params,
             "log_alpha": self.log_alpha.params,
+            "alpha_prime": self.alpha_prime.params,
         }
+        return params_dict
 
     def target_params(self):
         return {"qf1": self.target_qf1_params, "qf2": self.target_qf2_params}
 
     def model_keys(self):
-        return ("policy", "qf1", "qf2", "log_alpha")
+        keys = ["policy", "qf1", "qf2", "log_alpha", "alpha_prime"]
+        return keys
 
     def to_dict(self):
-        return {
+        _dict = {
             "policy": self.policy,
             "qf1": self.qf1,
             "qf2": self.qf2,
             "log_alpha": self.log_alpha,
-        }
+            "alpha_prime": self.alpha_prime,
+        }           
+        return _dict
 
     def update_from_dict(
         self, new_states: Dict[str, TrainState], new_target_qf_params: Dict[str, Any]
@@ -358,6 +367,7 @@ class CQLTrainState(NamedTuple):
             qf1=new_states["qf1"],
             qf2=new_states["qf2"],
             log_alpha=new_states["log_alpha"],
+            alpha_prime=new_states["alpha_prime"],
             target_qf1_params=new_target_qf_params["qf1"],
             target_qf2_params=new_target_qf_params["qf2"],
         )
@@ -383,6 +393,7 @@ class CQL(object):
         policy_fn = train_state.policy.apply_fn
         qf_fn = train_state.qf1.apply_fn
         log_alpha_fn = train_state.log_alpha.apply_fn
+        alpha_prime_fn = train_state.alpha_prime.apply_fn
         target_qf_params = train_state.target_params()
 
         def loss_fn(train_params):
@@ -582,10 +593,23 @@ class CQL(object):
                     config.cql_clip_diff_max,
                 ).mean()
 
-                cql_min_qf1_loss = cql_qf1_diff * config.cql_min_q_weight
-                cql_min_qf2_loss = cql_qf2_diff * config.cql_min_q_weight
-                alpha_prime_loss = 0.0
-                alpha_prime = 0.0
+                if config.cql_lagrange:
+                    alpha_prime = jnp.clip(
+                        jnp.exp(alpha_prime_fn(train_params["alpha_prime"])),
+                        a_min=0.0,
+                        a_max=1000000.0,
+                    )
+                    cql_min_qf1_loss = alpha_prime * config.cql_min_q_weight * (cql_qf1_diff - config.cql_target_action_gap)
+                    cql_min_qf2_loss = alpha_prime * config.cql_min_q_weight * (cql_qf2_diff - config.cql_target_action_gap)
+
+                    alpha_prime_loss = - (cql_min_qf1_loss + cql_min_qf2_loss) * 0.5
+                else:
+                    cql_min_qf1_loss = cql_qf1_diff * config.cql_min_q_weight
+                    cql_min_qf2_loss = cql_qf2_diff * config.cql_min_q_weight
+                    alpha_prime_loss = 0.0
+                    alpha_prime = 0.0
+
+                loss_collection["alpha_prime"] = alpha_prime_loss
 
                 qf1_loss = qf1_loss + cql_min_qf1_loss
                 qf2_loss = qf2_loss + cql_min_qf2_loss
@@ -735,11 +759,20 @@ def create_cql_train_state(
         tx=optimizer_class(config.policy_lr),
         apply_fn=log_alpha_model.apply,
     )
+
+    alpha_prime_model = Scalar(1.0)
+    rng, alpha_prime_rng = jax.random.split(rng)
+    alpha_prime = TrainState.create(
+        params=alpha_prime_model.init(alpha_prime_rng),
+        tx=optimizer_class(config.qf_lr),
+        apply_fn=alpha_prime_model.apply,
+    )
     return CQLTrainState(
         policy=policy,
         qf1=qf1,
         qf2=qf2,
         log_alpha=log_alpha,
+        alpha_prime=alpha_prime,
         target_qf1_params=target_qf1_params,
         target_qf2_params=target_qf2_params,
         global_steps=0,
@@ -773,6 +806,8 @@ if __name__ == "__main__":
     env = gym.make(config.env_name)
     dataset, obs_mean, obs_std = get_dataset(env, config)
     config.action_dim = env.action_space.shape[0]
+    # rescale reward
+    dataset = dataset._replace(rewards=dataset.rewards * config.reward_scale + config.reward_bias)
 
     if config.target_entropy >= 0.0:
         config.target_entropy = -np.prod(env.action_space.shape).item()

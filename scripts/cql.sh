@@ -1,4 +1,4 @@
-project=cql-report
+project=cql-report-
 
 cd .. && cd algos
 for seed in 1 2 3 4 5
