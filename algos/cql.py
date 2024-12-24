@@ -32,7 +32,7 @@ class CQLConfig(BaseModel):
     seed: int = 42
     n_jitted_updates: int = 8
     max_steps: int = 1000000
-    eval_interval: int = 10000
+    eval_interval: int = 100000
     eval_episodes: int = 5
     # DATA
     data_size: int = 1000000
@@ -825,13 +825,14 @@ if __name__ == "__main__":
     act_fn = jax.jit(algo.get_action)
 
     num_steps = int(config.max_steps // config.n_jitted_updates)
+    eval_interval = config.eval_interval // config.n_jitted_updates
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         metrics = {"step": i}
         rng, update_rng = jax.random.split(rng)
         train_state, metrics = update_fn(train_state, dataset, update_rng, config)
         metrics.update(metrics)
 
-        if i == 0 or (i + 1) % config.eval_interval == 0:
+        if i == 0 or (i + 1) % eval_interval == 0:
             policy_fn = partial(act_fn, train_state=train_state)
             normalized_score = evaluate(
                 policy_fn, env, config.eval_episodes, obs_mean=0, obs_std=1

@@ -31,7 +31,7 @@ class AWACConfig(BaseModel):
     seed: int = 42
     eval_episodes: int = 5
     log_interval: int = 100000
-    eval_interval: int = 10000
+    eval_interval: int = 100000
     batch_size: int = 256
     max_steps: int = int(1e6)
     n_jitted_updates: int = 8
@@ -398,6 +398,7 @@ if __name__ == "__main__":
     act_fn = jax.jit(algo.get_action)
 
     num_steps = config.max_steps // config.n_jitted_updates
+    eval_interval = config.eval_interval // config.n_jitted_updates
     start = time.time()
     for i in tqdm.tqdm(range(1, num_steps + 1), smoothing=0.1, dynamic_ncols=True):
         rng, subkey = jax.random.split(rng)
@@ -411,7 +412,7 @@ if __name__ == "__main__":
             train_metrics = {f"training/{k}": v for k, v in update_info.items()}
             wandb.log(train_metrics, step=i)
 
-        if i % config.eval_interval == 0:
+        if i % eval_interval == 0:
             policy_fn = partial(
                 act_fn,
                 temperature=0.0,
