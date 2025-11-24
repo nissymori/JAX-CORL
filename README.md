@@ -111,7 +111,7 @@ For all algorithms, we have `TrainState` class (e.g. `TD3BCTrainState` for TD3+B
 # Cite JAX-CORL
 ```
 @article{nishimori2024jaxcorl,
-  title={JAX-CORL: Clean Sigle-file Implementations of Offline RL Algorithms in JAX},
+  title={JAX-CORL: Clean Single-file Implementations of Offline RL Algorithms in JAX},
   author={Soichiro Nishimori},
   year={2024},
   url={https://github.com/nissymori/JAX-CORL}
