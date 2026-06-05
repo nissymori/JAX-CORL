@@ -109,7 +109,7 @@ For all algorithms, we have `TrainState` class (e.g. `TD3BCTrainState` for TD3+B
 - [purejaxrl](https://github.com/luchris429/purejaxrl): High-quality single-file implementations of online RL algorithms in JAX.
 
 # Cite JAX-CORL
-```
+```bibtex
 @article{nishimori2024jaxcorl,
   title={JAX-CORL: Clean Single-file Implementations of Offline RL Algorithms in JAX},
   author={Soichiro Nishimori},
